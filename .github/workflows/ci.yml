@@ -30,8 +30,10 @@ jobs:
       - run: node scripts/prepare-fixtures.mjs
       - name: Format check
         run: cargo fmt --all --check
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      # 跨平台 job 只检查纯 Rust crate；Tauri 应用依赖 GTK/WebKit，
+      # 由下方 Windows 专属 job 检查（避免在 ubuntu 上拉系统库）
+      - name: Clippy (core + cli)
+        run: cargo clippy -p logscope-core -p logscope-cli --all-targets -- -D warnings
       - name: Test (core + cli)
         run: cargo test -p logscope-core -p logscope-cli
       # GBK 夹具仅本地/Windows 需要；ubuntu 上 core 测试用内联字节，不依赖该文件
@@ -55,10 +57,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm install
-      - name: cargo check (src-tauri)
-        run: cargo check -p logscope-app
+      # 前端产物需要先构建（tauri-build 校验 frontendDist）
+      - run: npm run build
+      - name: Clippy (tauri app)
+        run: cargo clippy -p logscope-app --all-targets -- -D warnings
+      - name: Test (tauri app)
+        run: cargo test -p logscope-app
