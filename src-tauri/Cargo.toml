@@ -1,0 +1,26 @@
+[package]
+name = "logscope-app"
+description = "LogScope 桌面应用（Tauri 层）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "logscope_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+logscope-core = { workspace = true, features = ["serde"] }
+serde.workspace = true
+serde_json.workspace = true
+parking_lot.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+regex.workspace = true
+tokio = { version = "1", features = ["sync"] }

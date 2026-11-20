@@ -1,0 +1,10 @@
+# 默认按文本自动处理
+* text=auto
+
+# 夹具是字节精确的测试数据（偏移/BOM/CRLF/GBK），禁止任何换行或编码转换
+fixtures/** -text
+
+# 二进制资源
+*.png binary
+*.ico binary
+*.icns binary

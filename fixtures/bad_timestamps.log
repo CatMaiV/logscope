@@ -1,0 +1,7 @@
+2026-11-20 09:00:00.000 [main] INFO  c.e.Foo - normal head before trouble
+2026-13-45 09:00:01.000 [main] ERROR c.e.Foo - month and day out of range
+2026-11-20 25:61:61.000 [main] WARN  c.e.Foo - hour/minute/second out of range
+2027-02-29 00:00:00.000 [main] ERROR c.e.Foo - feb 29 on non-leap year
+2026-11-20 09:00:05.000 [main] INFO  c.e.Foo - recovered to normal
+no timestamp at all just a bare continuation-looking line
+2026-11-20 09:00:07.000 [main] INFO  c.e.Foo - tail normal

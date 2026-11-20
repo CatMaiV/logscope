@@ -1,0 +1,29 @@
+[package]
+name = "logscope-core"
+description = "LogScope 核心：静态日志文件的扫描、解析、索引与检索（无 Tauri 依赖）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# DTO 序列化（src-tauri 与 CLI --json 使用）
+serde = ["dep:serde"]
+# 稳定文件的 mmap 读取（M2+ 评估项，M1 不启用）
+mmap = ["dep:memmap2"]
+# 全局时间排序并行化
+rayon = ["dep:rayon"]
+
+[dependencies]
+memchr.workspace = true
+regex.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+encoding_rs.workspace = true
+serde = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }
+memmap2 = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"

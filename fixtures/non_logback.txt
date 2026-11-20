@@ -1,0 +1,13 @@
+Design Document: Order Processing Pipeline (DRAFT)
+
+This document describes the overall flow of the order processing pipeline.
+The pipeline consists of three stages: validation, enrichment, and settlement.
+
+Stage one, validation, checks the incoming payload against the JSON schema.
+Invalid payloads are rejected with a 400 response before any side effects.
+2026-11-20 was the date this document was last revised by the platform team.
+
+Note that stage two, enrichment, calls the user profile service and the
+catalog service in parallel. Timeouts are set to 500 milliseconds each.
+
+Stage three, settlement, is idempotent and may be retried by the scheduler.

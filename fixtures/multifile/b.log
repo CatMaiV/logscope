@@ -1,0 +1,5 @@
+2026-11-20 09:00:00.000 [main] INFO  c.e.app.B - b-file event t=0 seq0
+2026-11-20 09:00:01.000 [main] INFO  c.e.app.B - b-file event t=1 seq0 same ms as A
+2026-11-20 09:00:03.000 [main] INFO  c.e.app.B - b-file event t=3
+2026-11-20 09:00:05.000 [main] ERROR c.e.app.B - b-file event t=5 interleaved
+2026-11-20 09:00:07.000 [main] INFO  c.e.app.B - b-file event t=7

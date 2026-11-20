@@ -1,0 +1,6 @@
+2026-11-20 09:00:00.000 [main] INFO  c.e.app.A - a-file event t=0 seq0
+2026-11-20 09:00:01.000 [main] INFO  c.e.app.A - a-file event t=1 seq1
+2026-11-20 09:00:01.000 [main] INFO  c.e.app.A - a-file event t=1 seq2 same ms
+2026-11-20 09:00:05.000 [main] WARN  c.e.app.A - a-file event t=5 seq3
+2026-11-20 09:00:05.000 [main] ERROR c.e.app.A - a-file event t=5 seq4 same ms
+2026-11-20 09:00:09.000 [main] INFO  c.e.app.A - a-file event t=9 seq5

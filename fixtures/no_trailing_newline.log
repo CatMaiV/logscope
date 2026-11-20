@@ -1,0 +1,3 @@
+2026-11-20 09:00:00.000 [main] INFO  c.e.Foo - first
+2026-11-20 09:00:01.000 [main] INFO  c.e.Foo - second
+2026-11-20 09:00:02.000 [main] WARN  c.e.Foo - last line has no trailing newline

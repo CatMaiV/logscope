@@ -1,0 +1,29 @@
+# Node / 前端
+node_modules/
+dist/
+
+# Rust
+target/
+**/*.rs.bk
+
+# 大文件基准数据（由 logscope-cli gen 生成，不入库）
+*.bench.log
+target/**/*.log
+
+# 生成的大型夹具（脚本: node scripts/prepare-fixtures.mjs）
+fixtures/long_line.log
+fixtures/huge_event.log
+
+# Tauri
+src-tauri/gen/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# 本地环境
+.env
+.env.local

@@ -1,0 +1,6 @@
+2026-11-20 09:00:10.000 [main] INFO  c.e.Foo - event at 10s
+2026-11-20 09:00:02.000 [main] INFO  c.e.Foo - event at 2s (out of order)
+2026-11-20 09:00:05.000 [main] INFO  c.e.Foo - event at 5s (out of order)
+2026-11-20 09:00:00.000 [main] INFO  c.e.Foo - event at 0s (oldest, last in file)
+2026-11-20 09:00:10.000 [main] INFO  c.e.Foo - duplicate timestamp 10s again
+2026-11-20 09:00:03.000 [main] INFO  c.e.Foo - event at 3s

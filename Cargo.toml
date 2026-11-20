@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = ["crates/logscope-core", "crates/logscope-cli", "src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77.2"
+license = "MIT"
+
+[workspace.dependencies]
+logscope-core = { path = "crates/logscope-core" }
+memchr = "2.7"
+regex = "1.11"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+encoding_rs = "0.8"
+parking_lot = "0.12"
+rayon = "1.10"
+memmap2 = "0.9"
+uuid = { version = "1", features = ["v4"] }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

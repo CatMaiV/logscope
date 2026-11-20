@@ -1,0 +1,7 @@
+2026-11-20 09:00:00.000 [main] INFO  com.example.Application - Windows CRLF 服务启动
+2026-11-20 09:00:01.000 [main] WARN  c.e.config.ConfigLoader - using legacy registry path
+2026-11-20 09:00:02.000 [worker-1] ERROR c.e.io.FileWatcher - watch handle invalid
+java.io.IOException: The handle is invalid
+	at com.example.io.FileWatcher.poll(FileWatcher.java:88)
+	... 2 more
+2026-11-20 09:00:03.000 [main] INFO  com.example.Application - ready

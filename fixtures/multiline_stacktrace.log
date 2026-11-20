@@ -1,0 +1,31 @@
+2026-11-20 09:00:00.000 [main] INFO  com.example.Application - service starting
+2026-11-20 09:00:05.000 [http-nio-8080-exec-1] ERROR c.e.order.OrderService - failed to process order 99001
+java.lang.NullPointerException: Cannot invoke "com.example.order.Order.getUserId()" because "order" is null
+	at com.example.order.OrderService.process(OrderService.java:87)
+	at com.example.order.OrderService$$FastClassBySpringCGLIB$$1.invoke(<generated>)
+	at org.springframework.cglib.proxy.MethodProxy.invoke(MethodProxy.java:218)
+	at org.springframework.aop.framework.CglibAopProxy$CglibMethodInvocation.invokeJoinpoint(CglibAopProxy.java:793)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:163)
+	at org.springframework.aop.framework.CglibAopProxy$CglibMethodInvocation.proceed(CglibAopProxy.java:762)
+	at org.springframework.aop.interceptor.ExposeInvocationInterceptor.invoke(ExposeInvocationInterceptor.java:97)
+	at jdk.internal.reflect.GeneratedMethodAccessor123.invoke(Unknown Source)
+	at java.base/jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:568)
+Suppressed: java.lang.IllegalStateException: transaction already marked rollback-only
+	at org.springframework.transaction.support.AbstractPlatformTransactionManager.rollbackOnCommitFailure(AbstractPlatformTransactionManager.java:1674)
+	... 68 common frames omitted
+Caused by: java.lang.IllegalStateException: Order repository returned null for id=99001
+	at com.example.order.DbOrderRepository.findById(DbOrderRepository.java:45)
+	at com.example.order.OrderService.process(OrderService.java:85)
+	... 70 more
+2026-11-20 09:00:06.000 [http-nio-8080-exec-1] INFO  o.a.c.c.C.[.[.[/].[dispatcherServlet] - Completed 500 INTERNAL_SERVER_ERROR
+2026-11-20 09:00:10.000 [scheduler-1] INFO  c.e.job.MetricsReporter - job tick ok
+2026-11-20 09:00:15.000 [http-nio-8080-exec-2] ERROR c.e.pay.PaymentGateway - upstream rejected settlement batch
+com.example.pay.GatewayException: HTTP 503 from https://pay.example-gw.com/v2/settle
+	at com.example.pay.PaymentGateway.settle(PaymentGateway.java:210)
+	at com.example.pay.PaymentJob.run(PaymentJob.java:33)
+	... 4 more
+Caused by: java.net.SocketTimeoutException: Read timed out
+	at java.base/java.net.SocketInputStream.socketRead0(Native Method)
+	at java.base/java.net.SocketInputStream.read(SocketInputStream.java:194)
+	... 9 more

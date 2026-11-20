@@ -1,0 +1,11 @@
+2026-11-20 09:00:00.000  INFO 42101 --- [main] com.example.Application : Starting Application v2.0.0 using Java 21.0.1
+2026-11-20 09:00:00.420  INFO 42101 --- [main] o.s.b.f.s.DefaultListableBeanFactory : Overriding bean definition for bean 'dataSource'
+2026-11-20 09:00:01.001 DEBUG 42101 --- [main] org.hibernate.SQL : select version()
+2026-11-20 09:00:02.000  WARN 42101 --- [main] o.h.e.t.j.p.i.JdbcPlatformInitiator : HHH000490: Using JtaPlatform implementation
+2026-11-20 09:00:03.300  INFO 42101 --- [main] o.s.b.w.e.tomcat.TomcatWebServer : Tomcat initialized with port 8081
+2026-11-20 09:00:04.123 ERROR 42101 --- [http-nio-8081-exec-1] o.a.c.c.C.[.[.[/].[dispatcherServlet] : Servlet.service() threw exception
+jakarta.servlet.ServletException: Request processing failed
+	at org.springframework.web.servlet.FrameworkServlet.processRequest(FrameworkServlet.java:1014)
+	at jakarta.servlet.http.HttpServlet.service(HttpServlet.java:655)
+	... 42 common frames omitted
+2026-11-20 09:00:05.000  INFO 42101 --- [main] com.example.Application : Started Application in 5.001 seconds
