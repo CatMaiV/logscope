@@ -350,6 +350,67 @@ fn huge_event_truncation_invariant() {
 }
 
 #[test]
+fn timeline_matches_time_filtered_search() {
+    // M2 验收：同一批日志的时间范围过滤计数 == 时间轴桶计数
+    let out = scan(&fixture("basic_app.log"));
+    let idx = Arc::new(FileIndex::new(
+        out.meta.clone(),
+        out.entries.clone(),
+        out.stats.clone(),
+    ));
+    let ws = build_workspace(vec![idx.clone()]);
+    let (lo, hi) = ws.time_range().unwrap();
+
+    // 辅助：执行时间范围查询并计数
+    let count_range = |range: (i64, i64)| -> usize {
+        let mut reader = DetailReader::open(&out.meta, 480).unwrap();
+        let mut provider = logscope_core::search::SingleSource {
+            file_id: 0,
+            source: &mut reader,
+        };
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let q = logscope_core::search::SearchQuery {
+            time_range: Some(range),
+            ..Default::default()
+        };
+        logscope_core::search::execute(&q, &ws, &mut provider, &cancel)
+            .unwrap()
+            .refs
+            .len()
+    };
+
+    // 1ms 桶：每个桶统计恰好落在该毫秒的事件，桶求和 == 范围过滤计数
+    let sum_buckets = |spec_range: (i64, i64)| -> u64 {
+        let spec = logscope_core::timeline::BucketSpec {
+            start_ms: spec_range.0,
+            bucket_ms: 1,
+            count: (spec_range.1 - spec_range.0 + 1) as usize,
+        };
+        let buckets = logscope_core::timeline::aggregate(idx.entries.iter(), &spec);
+        buckets.iter().map(|b| b.total() as u64).sum()
+    };
+
+    // 全范围一致
+    let n_all = count_range((lo, hi));
+    assert_eq!(n_all, 42);
+    assert_eq!(
+        sum_buckets((lo, hi)) as usize,
+        n_all,
+        "全范围：桶计数 == 过滤计数"
+    );
+
+    // 子范围一致（秒边界对齐）
+    let sub = (lo + 10_000, hi - 5_000);
+    let n_sub = count_range(sub);
+    let b_sub = sum_buckets(sub) as usize;
+    assert!(n_sub > 0 && n_sub < 42);
+    assert_eq!(n_sub, b_sub, "子范围：桶计数 == 过滤计数（{}）", n_sub);
+
+    // 空范围（lo > hi）
+    assert_eq!(count_range((hi, lo)), 0);
+}
+
+#[test]
 fn long_line_virtual_break_invariant() {
     let path = fixture("long_line.log");
     if !path.exists() {

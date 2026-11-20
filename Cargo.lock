@@ -2042,6 +2042,7 @@ dependencies = [
  "chrono",
  "clap",
  "logscope-core",
+ "regex",
  "serde",
  "serde_json",
 ]

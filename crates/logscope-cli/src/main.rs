@@ -60,6 +60,9 @@ enum Cmd {
         before: u32,
         #[arg(long, default_value_t = 3)]
         after: u32,
+        /// 只看同线程的上下文（无线程信息时回退物理顺序）
+        #[arg(long)]
+        thread: bool,
     },
     /// 按级别 / 时间 / 关键词过滤
     Filter {
@@ -75,6 +78,9 @@ enum Cmd {
         text: Option<String>,
         #[arg(long)]
         text_ci: bool,
+        /// 将 --text 按正则解释（Rust regex 语法，不支持前后向断言）
+        #[arg(long)]
+        regex: bool,
         #[arg(long, default_value_t = 50)]
         limit: usize,
     },
@@ -98,6 +104,15 @@ enum Cmd {
         stack_rate: f64,
         #[arg(long, default_value_t = 42)]
         seed: u64,
+    },
+    /// 基准测试：解析 / 级别过滤 / 文本过滤 / 时间轴 各阶段耗时（多次取中位数）
+    Bench {
+        file: PathBuf,
+        /// 文本过滤关键词（默认 Exception）
+        #[arg(long, default_value = "Exception")]
+        text: String,
+        #[arg(long, default_value_t = 3)]
+        runs: usize,
     },
 }
 
@@ -137,7 +152,8 @@ fn run(cmd: Cmd) -> Result<i32> {
             id,
             before,
             after,
-        } => cmd_context(&file, id, before, after),
+            thread,
+        } => cmd_context(&file, id, before, after, thread),
         Cmd::Filter {
             file,
             level,
@@ -145,8 +161,9 @@ fn run(cmd: Cmd) -> Result<i32> {
             to,
             text,
             text_ci,
+            regex,
             limit,
-        } => cmd_filter(&file, level, from, to, text, text_ci, limit),
+        } => cmd_filter(&file, level, from, to, text, text_ci, regex, limit),
         Cmd::Timeline { file, bucket, json } => cmd_timeline(&file, &bucket, json),
         Cmd::Gen {
             out,
@@ -155,6 +172,7 @@ fn run(cmd: Cmd) -> Result<i32> {
             stack_rate,
             seed,
         } => cmd_gen(&out, &size, err_rate, stack_rate, seed),
+        Cmd::Bench { file, text, runs } => cmd_bench(&file, &text, runs),
     }
 }
 
@@ -311,11 +329,20 @@ fn cmd_show(file: &std::path::Path, id: u32, raw: bool) -> Result<i32> {
     Ok(0)
 }
 
-fn cmd_context(file: &std::path::Path, id: u32, before: u32, after: u32) -> Result<i32> {
+fn cmd_context(
+    file: &std::path::Path,
+    id: u32,
+    before: u32,
+    after: u32,
+    same_thread: bool,
+) -> Result<i32> {
     let (idx, mut reader, _ws, opts) = scan_and_index(file, "auto", "auto")?;
-    let ctx = reader
-        .read_context(&idx, id, before, after)
-        .with_context(|| format!("读取上下文失败（id={}）", id))?;
+    let ctx = if same_thread {
+        reader.read_context_thread(&idx, id, before, after)
+    } else {
+        reader.read_context(&idx, id, before, after)
+    }
+    .with_context(|| format!("读取上下文失败（id={}）", id))?;
     if ctx.is_empty() {
         bail!("事件 ID {} 不存在", id);
     }
@@ -374,6 +401,7 @@ fn parse_level_arg(s: &str) -> Result<LevelSet> {
     Ok(set)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_filter(
     file: &std::path::Path,
     level: Option<String>,
@@ -381,6 +409,7 @@ fn cmd_filter(
     to: Option<String>,
     text: Option<String>,
     text_ci: bool,
+    regex: bool,
     limit: usize,
 ) -> Result<i32> {
     let (idx, mut reader, ws, opts) = scan_and_index(file, "auto", "auto")?;
@@ -397,10 +426,17 @@ fn cmd_filter(
             (None, None) => None,
         },
         levels: level.as_deref().map(parse_level_arg).transpose()?,
-        text: text.map(|t| TextMatcher::Substring {
-            needle: t.into_bytes(),
-            case_insensitive: text_ci,
-        }),
+        text: match text {
+            Some(t) if regex => Some(TextMatcher::Regex(
+                regex::bytes::Regex::new(&t)
+                    .with_context(|| format!("正则错误: {}（不支持前后向断言/反向引用）", t))?,
+            )),
+            Some(t) => Some(TextMatcher::Substring {
+                needle: t.into_bytes(),
+                case_insensitive: text_ci,
+            }),
+            None => None,
+        },
     };
     let cancel = AtomicBool::new(false);
     let mut provider = SingleSource {
@@ -666,4 +702,158 @@ fn cmd_gen(
         seed
     );
     Ok(0)
+}
+
+// ---------------- bench ----------------
+
+/// 基准测试：各阶段耗时取多轮中位数（开发计划 §6 M2：100MB / 1GB 基准）。
+/// 用法示例：
+///   cargo run --release -p logscope-cli -- gen target/bench_100m.log --size 100MB
+///   cargo run --release -p logscope-cli -- bench target/bench_100m.log
+fn cmd_bench(file: &std::path::Path, text: &str, runs: usize) -> Result<i32> {
+    if !file.exists() {
+        bail!("文件不存在: {}（可先用 gen 子命令生成）", file.display());
+    }
+    let runs = runs.clamp(1, 20);
+    println!(
+        "基准目标: {} ({:.1} MB, {} 轮取中位数)",
+        file.display(),
+        file.metadata()?.len() as f64 / 1e6,
+        runs
+    );
+    println!("{:<24} {:>10} {:>12}", "阶段", "中位耗时", "产出");
+
+    let mut parse_ms = Vec::new();
+    let mut events = 0usize;
+    for _ in 0..runs {
+        let t = std::time::Instant::now();
+        let cb = ScanCallbacks::default();
+        let out = scan_file(file, &ScanOptions::default(), &cb, 0)?;
+        events = out.stats.events;
+        parse_ms.push(t.elapsed().as_secs_f64() * 1000.0);
+    }
+    println!(
+        "{:<24} {:>9.0}ms {:>12}",
+        "scan+index（解析）",
+        median(&mut parse_ms),
+        format!("{} 事件", events)
+    );
+
+    // 供后续阶段复用的工作区
+    let cb = ScanCallbacks::default();
+    let out = scan_file(file, &ScanOptions::default(), &cb, 0)?;
+    let idx = Arc::new(FileIndex::new(
+        out.meta.clone(),
+        out.entries,
+        out.stats.clone(),
+    ));
+    let ws = build_workspace(vec![idx.clone()]);
+    let mut reader = DetailReader::open(&out.meta, 480)?;
+    let cancel = AtomicBool::new(false);
+
+    // 级别过滤（纯索引，零 IO）
+    let mut level_ms = Vec::new();
+    let mut level_hits = 0usize;
+    for _ in 0..runs {
+        let t = std::time::Instant::now();
+        let q = SearchQuery {
+            levels: Some({
+                let mut s = LevelSet::empty();
+                s.insert(LogLevel::Error);
+                s.insert(LogLevel::Fatal);
+                s
+            }),
+            ..Default::default()
+        };
+        let mut provider = SingleSource {
+            file_id: 0,
+            source: &mut reader,
+        };
+        let r = logscope_core::search::execute(&q, &ws, &mut provider, &cancel)?;
+        level_hits = r.refs.len();
+        level_ms.push(t.elapsed().as_secs_f64() * 1000.0);
+    }
+    println!(
+        "{:<24} {:>9.0}ms {:>12}",
+        "filter: level=ERROR",
+        median(&mut level_ms),
+        format!("{} 命中", level_hits)
+    );
+
+    // 文本过滤（全文扫描）
+    let mut text_ms = Vec::new();
+    let mut text_hits = 0usize;
+    for _ in 0..runs {
+        let t = std::time::Instant::now();
+        let q = SearchQuery {
+            text: Some(TextMatcher::Substring {
+                needle: text.as_bytes().to_vec(),
+                case_insensitive: false,
+            }),
+            ..Default::default()
+        };
+        let mut provider = SingleSource {
+            file_id: 0,
+            source: &mut reader,
+        };
+        let r = logscope_core::search::execute(&q, &ws, &mut provider, &cancel)?;
+        text_hits = r.refs.len();
+        text_ms.push(t.elapsed().as_secs_f64() * 1000.0);
+    }
+    println!(
+        "{:<24} {:>9.0}ms {:>12}",
+        format!("filter: text=\"{}\"", text),
+        median(&mut text_ms),
+        format!("{} 命中", text_hits)
+    );
+
+    // 时间轴聚合
+    let mut tl_ms = Vec::new();
+    let mut buckets = 0usize;
+    for _ in 0..runs {
+        let t = std::time::Instant::now();
+        let Some((lo, hi)) = ws.time_range() else {
+            break;
+        };
+        let spec = logscope_core::timeline::spec_for_range(lo, hi);
+        let _aggregated = logscope_core::timeline::aggregate(idx.entries.iter(), &spec);
+        buckets = spec.count;
+        tl_ms.push(t.elapsed().as_secs_f64() * 1000.0);
+    }
+    if !tl_ms.is_empty() {
+        println!(
+            "{:<24} {:>9.0}ms {:>12}",
+            "timeline 聚合",
+            median(&mut tl_ms),
+            format!("{} 桶", buckets)
+        );
+    }
+
+    // 分页摘要（模拟 UI 首屏 200 条）
+    let mut page_ms = Vec::new();
+    for _ in 0..runs {
+        let t = std::time::Instant::now();
+        let rs = logscope_core::search::SearchResultSet {
+            refs: ws.time_order.clone(),
+            scanned_bytes: 0,
+        };
+        let page = rs.page(0, 200);
+        let _ = reader.read_summaries(
+            &idx,
+            &page.iter().map(|r| r.sequence_no).collect::<Vec<_>>(),
+        )?;
+        page_ms.push(t.elapsed().as_secs_f64() * 1000.0);
+    }
+    println!(
+        "{:<24} {:>9.1}ms {:>12}",
+        "page(200) 摘要读取",
+        median(&mut page_ms),
+        "200 条"
+    );
+    Ok(0)
+}
+
+fn median(v: &mut [f64]) -> f64 {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    v[v.len() / 2]
 }
