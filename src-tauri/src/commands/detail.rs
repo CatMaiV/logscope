@@ -67,17 +67,29 @@ pub struct ContextItemDto {
     pub text: String,
 }
 
-/// 同文件物理顺序前后文。
+/// 上下文结果：`mode` 为实际使用的模式（`thread` 同线程 / `physical` 物理顺序）。
+/// 请求同线程但事件无线程信息（Raw / 无线程段 / UNKNOWN）时自动回退 physical，
+/// 由前端据此提示用户。
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextResultDto {
+    pub mode: String,
+    pub items: Vec<ContextItemDto>,
+}
+
+/// 同文件前后文（物理顺序，或 `same_thread=true` 时同线程；无线程信息自动回退物理顺序）。
 #[tauri::command]
 pub fn get_log_context(
     file_id: u32,
     sequence_no: u32,
     before: Option<u32>,
     after: Option<u32>,
+    same_thread: Option<bool>,
     state: State<'_, AppState>,
-) -> CmdResult<Vec<ContextItemDto>> {
+) -> CmdResult<ContextResultDto> {
     let before = before.unwrap_or(20).min(500);
     let after = after.unwrap_or(20).min(500);
+    let same_thread = same_thread.unwrap_or(false);
     let ws = state.workspace.read();
     let idx = ws
         .index
@@ -89,18 +101,30 @@ pub fn get_log_context(
         .get(&file_id)
         .cloned()
         .ok_or_else(|| CmdError::new("not-found", format!("文件读取器不存在: {}", file_id)))?;
-    let ctx = reader
-        .lock()
-        .read_context(&idx, sequence_no, before, after)?;
-    Ok(ctx
-        .into_iter()
-        .map(|(e, text)| ContextItemDto {
-            sequence_no: e.sequence_no,
-            timestamp_ms: e.timestamp_ms,
-            level: e.level.as_str().to_string(),
-            text,
-        })
-        .collect())
+    let has_thread = same_thread && reader.lock().thread_of_entry(&idx, sequence_no).is_some();
+    let (mode, ctx) = if has_thread {
+        let items = reader
+            .lock()
+            .read_context_thread(&idx, sequence_no, before, after)?;
+        ("thread", items)
+    } else {
+        let items = reader
+            .lock()
+            .read_context(&idx, sequence_no, before, after)?;
+        ("physical", items)
+    };
+    Ok(ContextResultDto {
+        mode: mode.to_string(),
+        items: ctx
+            .into_iter()
+            .map(|(e, text)| ContextItemDto {
+                sequence_no: e.sequence_no,
+                timestamp_ms: e.timestamp_ms,
+                level: e.level.as_str().to_string(),
+                text,
+            })
+            .collect(),
+    })
 }
 
 /// 关闭文件：释放索引与句柄。

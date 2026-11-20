@@ -44,6 +44,8 @@ pub struct ParsedHead {
     pub level: LogLevel,
     /// logger 字段在行内的字节区间 `[s, e)`（相对行首），避免字符串分配
     pub logger: Option<(u64, u64)>,
+    /// thread 字段在行内的字节区间 `[s, e)`（相对行首）；无线程段的 Profile 为 None
+    pub thread: Option<(u64, u64)>,
     pub timestamp_ms: Option<i64>,
     /// 原始时区偏移（分钟），供展示"原始时区"
     pub tz_offset_min: Option<i16>,
@@ -85,6 +87,7 @@ impl EventParser for RawParser {
         ParsedHead {
             level: LogLevel::Unknown,
             logger: None,
+            thread: None,
             timestamp_ms: None,
             tz_offset_min: None,
             bad_timestamp: false,

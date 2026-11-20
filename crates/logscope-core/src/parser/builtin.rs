@@ -53,6 +53,7 @@ impl EventParser for RegexHeadParser {
                 return ParsedHead {
                     level: LogLevel::Unknown,
                     logger: None,
+                    thread: None,
                     timestamp_ms: None,
                     tz_offset_min: None,
                     bad_timestamp: false,
@@ -74,9 +75,13 @@ impl EventParser for RegexHeadParser {
         let logger = caps
             .name("logger")
             .map(|m| (m.start() as u64, m.end() as u64));
+        let thread = caps
+            .name("thread")
+            .map(|m| (m.start() as u64, m.end() as u64));
         ParsedHead {
             level,
             logger,
+            thread,
             timestamp_ms,
             tz_offset_min,
             bad_timestamp,

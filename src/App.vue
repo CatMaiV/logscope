@@ -1,34 +1,87 @@
 <script setup lang="ts">
-// M0 空壳 + 核心服务连通性自检。M3 在此挂载完整布局。
-import { onMounted, ref } from "vue";
-import { listFiles } from "./services/ipc";
+/**
+ * 应用布局（开发计划 §4.6）：
+ * 顶部过滤栏 | 左文件面板 + 时间轴 + 虚拟列表 | 详情抽屉
+ * 支持：拖拽导入、暗/亮主题切换。
+ */
+import { onMounted, onUnmounted, ref } from "vue";
+import {
+  NButton,
+  NConfigProvider,
+  NMessageProvider,
+  darkTheme,
+  dateZhCN,
+  zhCN,
+  type GlobalTheme,
+} from "naive-ui";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { useWorkspace } from "@/stores/workspace";
+import FilePanel from "@/components/FilePanel.vue";
+import LogFilterBar from "@/components/LogFilterBar.vue";
+import LogTimeline from "@/components/LogTimeline.vue";
+import VirtualLogList from "@/components/VirtualLogList.vue";
+import DetailPanel from "@/components/DetailPanel.vue";
 
-const coreStatus = ref<"checking" | "ok" | "error">("checking");
-const coreError = ref("");
+const store = useWorkspace();
+const light = ref(false);
+
+let unlisten: (() => void) | null = null;
 
 onMounted(async () => {
-  try {
-    // 冒烟：invoke Rust 命令链路（list_files 是最轻的命令）
-    const files = await listFiles();
-    coreStatus.value = "ok";
-    console.log(`[logscope] 核心服务连通，当前已导入 ${files.length} 个文件`);
-  } catch (e) {
-    coreStatus.value = "error";
-    coreError.value = String(e);
-    console.error("[logscope] 核心服务调用失败", e);
+  await store.refreshFiles();
+  if (store.files.length > 0) {
+    await store.runSearch();
   }
+  // 拖拽导入（Tauri webview 事件）
+  try {
+    unlisten = await getCurrentWebview().onDragDropEvent((event) => {
+      if (event.payload.type === "drop") {
+        void store.importPaths(event.payload.paths);
+      }
+    });
+  } catch (e) {
+    console.warn("拖拽事件不可用", e);
+  }
+});
+
+onUnmounted(() => {
+  unlisten?.();
+  unlisten = null;
 });
 </script>
 
 <template>
-  <main class="shell">
-    <h1>LogScope</h1>
-    <p>本地日志可视化工具 — 工程基础已就绪（M0/M1）。</p>
-    <p v-if="coreStatus === 'checking'" class="dim">正在连接核心服务…</p>
-    <p v-else-if="coreStatus === 'ok'" class="ok">✔ 核心服务连通（Rust 命令链路正常）</p>
-    <p v-else class="err">✘ 核心服务调用失败：{{ coreError }}</p>
-    <p class="dim">0.1.0 (M0/M1) — 时间轴与列表将在 M3 就绪</p>
-  </main>
+  <NConfigProvider
+    :theme="(light ? undefined : darkTheme) as GlobalTheme | undefined"
+    :locale="zhCN"
+    :date-locale="dateZhCN"
+    style="height: 100vh"
+  >
+    <NMessageProvider>
+      <div class="app" :class="{ light }">
+        <header class="app-header">
+          <div class="brand">
+            <span class="logo">▚</span> LogScope
+            <span class="dim tiny">本地日志分析</span>
+          </div>
+          <NButton size="tiny" quaternary @click="light = !light">
+            {{ light ? "🌙 暗色" : "☀️ 亮色" }}
+          </NButton>
+        </header>
+
+        <div class="app-body">
+          <FilePanel />
+          <main class="main">
+            <LogFilterBar />
+            <LogTimeline />
+            <VirtualLogList />
+            <DetailPanel />
+          </main>
+        </div>
+
+      </div>
+    </NMessageProvider>
+  </NConfigProvider>
 </template>
 
 <style>
@@ -36,22 +89,59 @@ onMounted(async () => {
   color-scheme: dark;
   font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
 }
-body {
+html,
+body,
+#app {
   margin: 0;
+  height: 100%;
+}
+.app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
   background: #1a1b26;
   color: #d5d6db;
 }
-.shell {
-  padding: 32px 40px;
+.app.light {
+  background: #f5f6f8;
+  color: #26272e;
+}
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 14px;
+  border-bottom: 1px solid #2a2b3a;
+  flex-shrink: 0;
+}
+.app.light .app-header {
+  border-bottom-color: #dcdfe6;
+}
+.brand {
+  font-weight: 700;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.logo {
+  color: #4f9cf9;
+}
+.app-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 .dim {
   color: #6b7280;
-  font-size: 13px;
 }
-.ok {
-  color: #6ec98f;
-}
-.err {
-  color: #e0706c;
+.tiny {
+  font-size: 11px;
 }
 </style>

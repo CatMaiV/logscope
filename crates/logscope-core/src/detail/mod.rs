@@ -90,6 +90,112 @@ impl DetailReader {
         Ok(out)
     }
 
+    /// 同线程上下文：以当前事件的线程名为准，在物理邻居中筛出同线程的前后各 N 条。
+    ///
+    /// 实现方式（索引不存线程名，按需提取）：一次性读取当前事件前后扫描窗口的原文，
+    /// 逐事件解析首行的 thread 组并比对。找不到线程名（Raw / 无线程段 Profile /
+    /// UNKNOWN 事件）时**回退物理顺序上下文**——调用方无法区分两种模式时展示依然合理。
+    ///
+    /// 扫描窗口上限 `MAX_THREAD_SCAN` 个事件或 `MAX_THREAD_SPAN` 字节（先到为准）。
+    pub fn read_context_thread(
+        &mut self,
+        idx: &FileIndex,
+        seq: u32,
+        before: u32,
+        after: u32,
+    ) -> Result<Vec<(LogEntry, String)>, CoreError> {
+        const MAX_THREAD_SCAN: usize = 4000;
+        const MAX_THREAD_SPAN: u64 = 8 * 1024 * 1024;
+
+        let n = idx.entries.len();
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+        let seq = (seq as usize).min(n - 1);
+
+        // 当前事件线程名
+        let cur = idx.entries[seq];
+        let Some(thread) = self.thread_of(&cur)? else {
+            return self.read_context(idx, seq as u32, before, after);
+        };
+
+        // 扫描窗口（事件数与字节双上限）
+        let mut lo = seq.saturating_sub(MAX_THREAD_SCAN);
+        let mut hi = (seq + MAX_THREAD_SCAN + 1).min(n);
+        while idx.entries[hi - 1].end_offset - idx.entries[lo].start_offset > MAX_THREAD_SPAN {
+            // 双向收缩直到满足字节上限
+            let can_shrink_lo = seq - lo > before as usize;
+            let can_shrink_hi = hi - 1 - seq > after as usize;
+            if !can_shrink_lo && !can_shrink_hi {
+                break;
+            }
+            if can_shrink_lo && (lo < seq) {
+                lo += 1;
+            }
+            if can_shrink_hi && hi - 1 > seq {
+                hi -= 1;
+            }
+        }
+
+        // 一次性读窗口原文
+        let span_start = idx.entries[lo].start_offset;
+        let span_end = idx.entries[hi - 1].end_offset;
+        let buf = crate::search::RawSource::read_range(self, span_start, span_end)?;
+
+        // 逐事件比对线程，收集前后各 N 条（保持物理顺序输出）
+        let is_same = |e: &LogEntry| -> bool {
+            event_thread_from_buf(&buf, e, span_start, self.profile).as_deref()
+                == Some(thread.as_str())
+        };
+        let mut out: Vec<(LogEntry, String)> = Vec::with_capacity((before + after + 1) as usize);
+        // 前 before 条（从近到远收集，再反转）
+        let mut before_items: Vec<(LogEntry, String)> = Vec::new();
+        for i in (lo..seq).rev() {
+            if before_items.len() >= before as usize {
+                break;
+            }
+            let e = idx.entries[i];
+            if is_same(&e) {
+                before_items.push((e, event_text_from_buf(&buf, &e, span_start, self.encoding)));
+            }
+        }
+        before_items.reverse();
+        out.extend(before_items);
+        // 当前事件（始终包含）
+        out.push((
+            cur,
+            event_text_from_buf(&buf, &cur, span_start, self.encoding),
+        ));
+        // 后 after 条
+        let limit = before as usize + 1 + after as usize;
+        for e in idx.entries[seq + 1..hi].iter().copied() {
+            if out.len() >= limit {
+                break;
+            }
+            if is_same(&e) {
+                out.push((e, event_text_from_buf(&buf, &e, span_start, self.encoding)));
+            }
+        }
+        Ok(out)
+    }
+
+    /// 该事件的线程名（若有）。命令层据此判断"同线程上下文"是否可用。
+    pub fn thread_of_entry(&mut self, idx: &FileIndex, seq: u32) -> Option<String> {
+        let entry = *idx.entries.get(seq as usize)?;
+        self.thread_of(&entry).ok().flatten()
+    }
+
+    /// 提取事件首行的线程名（按需，不进索引）
+    fn thread_of(&mut self, entry: &LogEntry) -> Result<Option<String>, CoreError> {
+        let raw = self.read_raw_exact(entry)?;
+        Ok(event_thread_from_buf(
+            &raw,
+            entry,
+            entry.start_offset,
+            self.profile,
+        ))
+    }
+
     /// 摘要批量读取（M3 虚拟滚动窗口用）：logger + 消息头。
     pub fn read_summaries(
         &mut self,
@@ -150,6 +256,49 @@ fn trim_cr(mut line: &[u8]) -> &[u8] {
         line = &line[..line.len() - 1];
     }
     line
+}
+
+/// 事件原文的首行（去 CR）
+fn first_line_of(raw: &[u8]) -> &[u8] {
+    let end = raw.iter().position(|b| *b == b'\n').unwrap_or(raw.len());
+    trim_cr(&raw[..end])
+}
+
+/// 从窗口缓冲中取事件首行并解析线程名。
+/// `base` 为缓冲 [0] 对应的文件绝对偏移（当缓冲就是整段原文时传 0）。
+fn event_thread_from_buf(
+    buf: &[u8],
+    e: &LogEntry,
+    base: u64,
+    profile: Option<ProfileId>,
+) -> Option<String> {
+    let s = (e.start_offset - base) as usize;
+    let end = (e.end_offset - base) as usize;
+    let raw = buf.get(s..end)?;
+    let line = first_line_of(raw);
+    let parser = find_parser(&profile.unwrap_or(ProfileId::Builtin(BuiltinProfile::Raw)));
+    if !parser.is_head(line) {
+        return None;
+    }
+    let head = parser.parse_head(
+        line,
+        &TimeParser {
+            default_tz_offset_min: 0,
+        },
+    );
+    let (ts, te) = head.thread?;
+    Some(String::from_utf8_lossy(&line[ts as usize..te as usize]).into_owned())
+}
+
+/// 从窗口缓冲中取事件完整文本（去尾部换行并解码）
+fn event_text_from_buf(buf: &[u8], e: &LogEntry, base: u64, encoding: SourceEncoding) -> String {
+    let s = (e.start_offset - base) as usize;
+    let end = (e.end_offset - base) as usize;
+    let mut raw = buf.get(s..end).map(|b| b.to_vec()).unwrap_or_default();
+    while matches!(raw.last(), Some(b'\n' | b'\r')) {
+        raw.pop();
+    }
+    decode_for_display(&raw, encoding)
 }
 
 /// 按字符边界安全截断字符串（避免 panic）。
@@ -278,5 +427,59 @@ mod tests {
         let mut reader = DetailReader::open(&out.meta, 480).unwrap();
         let text = reader.read_text(&idx.entries[0]).unwrap();
         assert!(text.contains("中文"), "GBK 应解码为中文: {}", text);
+    }
+
+    #[test]
+    fn same_thread_context_filters_and_falls_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("threads.log");
+        // 线程交错：main / worker / main / worker / main ...
+        let mut buf = String::new();
+        let threads = [
+            "main", "worker-1", "main", "worker-1", "main", "worker-1", "main",
+        ];
+        for (i, t) in threads.iter().enumerate() {
+            buf.push_str(&format!(
+                "2026-11-20 09:00:{:02}.000 [{}] INFO  c.e.T{} - message {} for {}\n",
+                i, t, i, i, t
+            ));
+        }
+        std::fs::write(&p, buf).unwrap();
+        let (idx, out) = scan(&p);
+        assert_eq!(idx.entries.len(), 7);
+
+        let mut reader = DetailReader::open(&out.meta, 480).unwrap();
+
+        // 物理：seq 3 (worker-1) 前后各 2 条 → seq 1..=5（含 main）
+        let phys = reader.read_context(&idx, 3, 2, 2).unwrap();
+        let seqs: Vec<u32> = phys.iter().map(|(e, _)| e.sequence_no).collect();
+        assert_eq!(seqs, vec![1, 2, 3, 4, 5]);
+
+        // 同线程：seq 3 (worker-1) 前后各 2 条 → 只有 worker-1 的 seq 1、3、5
+        let same = reader.read_context_thread(&idx, 3, 2, 2).unwrap();
+        let seqs2: Vec<u32> = same.iter().map(|(e, _)| e.sequence_no).collect();
+        assert_eq!(seqs2, vec![1, 3, 5], "同线程上下文只含 worker-1 事件");
+        for (_e, text) in &same {
+            assert!(
+                text.contains("[worker-1]"),
+                "文本应来自 worker 线程: {}",
+                text
+            );
+        }
+
+        // 边界：seq 0 (main) 取前 5 后 5 → main 的全部（0,2,4,6）
+        let same2 = reader.read_context_thread(&idx, 0, 5, 5).unwrap();
+        let seqs3: Vec<u32> = same2.iter().map(|(e, _)| e.sequence_no).collect();
+        assert_eq!(seqs3, vec![0, 2, 4, 6]);
+
+        // 回退：无线程 Profile（Raw）→ 等同物理上下文
+        let dir2 = tempfile::tempdir().unwrap();
+        let p2 = dir2.path().join("raw.txt");
+        std::fs::write(&p2, "plain text\nwithout format\n").unwrap();
+        let (idx2, out2) = scan(&p2);
+        let mut r2 = DetailReader::open(&out2.meta, 480).unwrap();
+        let fb = r2.read_context_thread(&idx2, 0, 1, 1).unwrap();
+        let phys2 = r2.read_context(&idx2, 0, 1, 1).unwrap();
+        assert_eq!(fb.len(), phys2.len());
     }
 }

@@ -232,6 +232,29 @@ pub async fn open_files(
         } else {
             handle.set_status(TaskStatus::Done);
         }
+        // 整批终态事件（前端等待导入完成的信号）
+        let final_phase = match handle.status() {
+            TaskStatus::Done => "all-done",
+            TaskStatus::Cancelled => "cancelled",
+            TaskStatus::Failed(ref m) => {
+                let _ = m;
+                "failed"
+            }
+            _ => "all-done",
+        };
+        let final_msg = match handle.status() {
+            TaskStatus::Failed(ref m) => Some(m.clone()),
+            _ => None,
+        };
+        let _ = on_progress.send(ImportProgress {
+            task_id: task_id.clone(),
+            file: format!("{} 个文件（{} 失败）", total, failed),
+            phase: final_phase.to_string(),
+            bytes_done: 0,
+            bytes_total: 0,
+            events: 0,
+            message: final_msg,
+        });
         st.prune_tasks();
     });
 
