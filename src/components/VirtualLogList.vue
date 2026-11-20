@@ -144,6 +144,11 @@ defineExpose({ scrollToIndex });
       class="overlay"
       description="无匹配事件（调整过滤条件）"
     />
+    <NEmpty
+      v-else-if="searchState === 'idle'"
+      class="overlay"
+      description="未导入文件（拖入日志或点左上角「导入」）"
+    />
   </div>
 </template>
 
@@ -163,10 +168,10 @@ defineExpose({ scrollToIndex });
   padding: 0 10px;
   white-space: nowrap;
   cursor: pointer;
-  border-bottom: 1px solid #ffffff08;
+  border-bottom: 1px solid var(--hairline);
 }
 .log-row:hover {
-  background: #ffffff0d;
+  background: var(--hover);
 }
 .row-error {
   background: #e05c5c0f;
@@ -175,7 +180,7 @@ defineExpose({ scrollToIndex });
   background: #e0a84e0a;
 }
 .col-time {
-  color: #8a8f98;
+  color: var(--text-mute);
   flex-shrink: 0;
 }
 .col-level {
@@ -194,13 +199,13 @@ defineExpose({ scrollToIndex });
 .badge {
   flex-shrink: 0;
   font-size: 10px;
-  border: 1px solid #6b7280;
+  border: 1px solid var(--text-dim);
   border-radius: 3px;
   padding: 0 3px;
-  color: #6b7280;
+  color: var(--text-dim);
 }
 .dim {
-  color: #6b7280;
+  color: var(--text-dim);
 }
 .overlay {
   position: sticky;
@@ -211,8 +216,8 @@ defineExpose({ scrollToIndex });
   gap: 8px;
   align-items: center;
   padding: 8px 14px;
-  background: #1a1b26e6;
+  background: var(--overlay-bg);
   border-radius: 6px;
-  border: 1px solid #3a3b4a;
+  border: 1px solid var(--border-strong);
 }
 </style>

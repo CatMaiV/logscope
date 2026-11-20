@@ -3,4 +3,5 @@
 pub mod builtin;
 pub mod detect;
 pub mod machine;
+pub mod preview;
 pub mod time;

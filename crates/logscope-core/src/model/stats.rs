@@ -38,6 +38,9 @@ pub struct ScanOptions {
     pub profile_hint: Option<ProfileId>,
     /// 指定编码；None 则 BOM + 采样自动识别
     pub encoding_hint: Option<SourceEncoding>,
+    /// 自定义解析正则（M4）：存在时优先于自动识别。
+    /// 必须包含命名组 `ts` 与 `level`；可选 `tz` / `thread` / `logger` / `msg`。
+    pub custom_pattern: Option<String>,
     /// 无时区时间戳的工作区默认时区（分钟偏移），默认 +480（Asia/Shanghai）
     pub default_tz_offset_min: i32,
     /// 单事件最大字节数，超出强制截断（防异常格式无限合并），默认 8MiB
@@ -51,6 +54,7 @@ impl Default for ScanOptions {
         ScanOptions {
             profile_hint: None,
             encoding_hint: None,
+            custom_pattern: None,
             default_tz_offset_min: 480,
             max_event_bytes: 8 * 1024 * 1024,
             max_line_bytes: 4 * 1024 * 1024,

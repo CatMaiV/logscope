@@ -14,6 +14,7 @@ pub fn run() {
             commands::import::open_files,
             commands::import::get_task_status,
             commands::import::cancel_import,
+            commands::import::preview_parse,
             commands::query::list_files,
             commands::query::get_timeline,
             commands::query::search_logs,

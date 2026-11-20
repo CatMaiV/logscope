@@ -2,15 +2,26 @@
 /**
  * 左侧文件面板：导入（对话框 + 拖拽提示）、文件卡片、勾选过滤、关闭。
  */
+import { ref } from "vue";
 import { storeToRefs } from "pinia";
 import { open } from "@tauri-apps/plugin-dialog";
-import { NButton, NCheckbox, NProgress, NScrollbar, NSpin, NTag, NTooltip } from "naive-ui";
+import { NButton, NCheckbox, NProgress, NScrollbar, NSpin, NTag } from "naive-ui";
 import { useWorkspace } from "@/stores/workspace";
 import type { ImportProgress } from "@/services/ipc";
 import { fmtBytes, fmtMs } from "@/services/format";
+import RuleModal from "@/components/RuleModal.vue";
+import type { FileSummary } from "@/services/ipc";
 
 const store = useWorkspace();
 const { files, importing, importProgress, importErrors, selectedFileIds } = storeToRefs(store);
+
+/** 解析规则弹窗 */
+const ruleFile = ref<FileSummary | null>(null);
+const ruleShow = ref(false);
+function openRule(f: FileSummary) {
+  ruleFile.value = f;
+  ruleShow.value = true;
+}
 
 async function pickFiles() {
   const picked = await open({
@@ -32,9 +43,20 @@ function pct(p: ImportProgress | null): number {
   <aside class="file-panel">
     <div class="panel-head">
       <span class="title">文件（{{ files.length }}）</span>
-      <NButton size="tiny" type="primary" :loading="importing" @click="pickFiles">
-        导入
-      </NButton>
+      <div class="head-actions">
+        <button
+          v-if="files.length"
+          type="button"
+          class="close-all"
+          title="移除全部文件并释放索引"
+          @click="store.closeAllFiles()"
+        >
+          全部关闭
+        </button>
+        <NButton size="tiny" type="primary" :loading="importing" @click="pickFiles">
+          导入
+        </NButton>
+      </div>
     </div>
 
     <div v-if="importing && importProgress" class="import-progress">
@@ -76,21 +98,19 @@ function pct(p: ImportProgress | null): number {
           >
             <span class="fc-name" :title="f.path">{{ f.fileName }}</span>
           </NCheckbox>
-          <NTooltip trigger="hover">
-            <template #trigger>
-              <button class="fc-close" title="关闭文件" @click.stop="store.closeFile(f.fileId)">
-                ×
-              </button>
-            </template>
-            关闭并释放索引
-          </NTooltip>
+          <button
+            type="button"
+            class="fc-close"
+            title="移除该文件（释放索引）"
+            @click.stop="store.closeFile(f.fileId)"
+          >
+            ✕
+          </button>
         </div>
-        <div class="fc-stats">
-          <span>{{ fmtBytes(f.fileSize) }}</span>
-          <span>{{ f.events.toLocaleString() }} 事件</span>
-          <span class="dim">{{ f.encoding }}</span>
+        <div class="fc-meta">
+          {{ fmtBytes(f.fileSize) }} · {{ f.events.toLocaleString() }} 事件 · {{ f.encoding }}
         </div>
-        <div class="fc-stats">
+        <div v-if="f.errorCount || f.warnCount || f.unknownCount" class="fc-tags">
           <NTag v-if="f.errorCount" size="tiny" type="error" :bordered="false">
             ERROR {{ f.errorCount }}
           </NTag>
@@ -100,7 +120,18 @@ function pct(p: ImportProgress | null): number {
           <NTag v-if="f.unknownCount" size="tiny" :bordered="false">
             未识别 {{ f.unknownCount }}
           </NTag>
-          <span class="dim fc-profile">{{ f.profile ?? "" }}</span>
+        </div>
+        <div class="fc-footer">
+          <span class="fc-profile" :title="f.profile ?? ''">{{ f.profile ?? "未知格式" }}</span>
+          <button
+            type="button"
+            class="fc-rule"
+            :class="{ warn: f.unknownCount > 0 || (f.profile ?? '').includes('未识别') }"
+            title="自定义日志格式：编辑正则、预览识别结果后重新导入"
+            @click.stop="openRule(f)"
+          >
+            自定义格式
+          </button>
         </div>
         <div v-if="f.timeMinMs !== null" class="fc-time dim">
           {{ fmtMs(f.timeMinMs) }} ~ {{ fmtMs(f.timeMaxMs) }}
@@ -116,17 +147,18 @@ function pct(p: ImportProgress | null): number {
       </div>
       <div v-if="importErrors.length > 3" class="dim">… 共 {{ importErrors.length }} 条错误</div>
     </div>
+    <RuleModal v-model:show="ruleShow" :file="ruleFile" />
   </aside>
 </template>
 
 <style scoped>
 .file-panel {
-  width: 250px;
-  min-width: 250px;
+  width: 268px;
+  min-width: 268px;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--n-border-color, #2a2b3a);
-  background: rgba(0, 0, 0, 0.12);
+  border-right: 1px solid var(--n-border-color, var(--border));
+  background: var(--bg-panel);
 }
 .panel-head {
   display: flex;
@@ -161,7 +193,7 @@ function pct(p: ImportProgress | null): number {
 .empty {
   text-align: center;
   padding: 40px 12px;
-  color: #6b7280;
+  color: var(--text-dim);
   font-size: 13px;
 }
 .empty-icon {
@@ -169,9 +201,10 @@ function pct(p: ImportProgress | null): number {
   margin-bottom: 8px;
 }
 .dim {
-  color: #6b7280;
+  color: var(--text-dim);
 }
 .file-card {
+  overflow: hidden;
   margin: 4px 8px;
   padding: 8px;
   border-radius: 6px;
@@ -184,43 +217,132 @@ function pct(p: ImportProgress | null): number {
 }
 .fc-row1 {
   display: flex;
-  justify-content: space-between;
+  gap: 6px;
   align-items: center;
+  min-width: 0;
+}
+/* 复选框（含文件名）占据剩余空间并允许收缩，保证右侧按钮始终可见 */
+.fc-row1 > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+:deep(.n-checkbox) {
+  min-width: 0;
+  overflow: hidden;
+}
+:deep(.n-checkbox__label) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 .fc-name {
   font-weight: 600;
-  max-width: 150px;
+  display: block;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.fc-close {
-  border: none;
+.head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.close-all {
+  border: 1px solid var(--border-strong);
   background: none;
-  color: #6b7280;
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-  padding: 2px 6px;
+  color: var(--text-mute);
+  font-size: 11px;
+  padding: 2px 8px;
   border-radius: 4px;
+  cursor: pointer;
+}
+.close-all:hover {
+  color: #e05c5c;
+  border-color: #e05c5c88;
+}
+.fc-rule {
+  flex-shrink: 0;
+  border: 1px solid var(--border-strong);
+  background: none;
+  color: var(--text-mute);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.fc-rule:hover {
+  color: #4f9cf9;
+  border-color: #4f9cf9;
+}
+.fc-rule.warn {
+  color: #e0a84e;
+  border-color: #e0a84e88;
+}
+.fc-close {
+  border: 1px solid var(--border-strong);
+  background: var(--hairline);
+  color: var(--text-mute);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.fc-close:hover {
+  color: #e05c5c;
+  border-color: #e05c5c88;
+  background: #e05c5c1a;
+}
+.fc-close {
+  font-size: 11px;
+  white-space: nowrap;
 }
 .fc-close:hover {
   color: #e05c5c;
   background: #e05c5c1a;
+  border-radius: 4px;
 }
-.fc-stats {
+.fc-meta {
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fc-tags {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
-  margin-top: 4px;
+  margin-top: 5px;
   flex-wrap: wrap;
 }
+.fc-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  min-width: 0;
+}
 .fc-profile {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 11px;
+  color: var(--text-mute);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .fc-time {
-  margin-top: 3px;
+  margin-top: 5px;
   font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .import-spin {
   display: block;

@@ -20,6 +20,8 @@ pub struct ImportSettings {
     /// 分钟偏移，默认 480（Asia/Shanghai）
     pub tz_offset_min: Option<i32>,
     pub max_event_bytes: Option<usize>,
+    /// 自定义解析正则（M4）：必须含 `ts` 与 `level` 命名组，优先于自动识别
+    pub custom_pattern: Option<String>,
 }
 
 /// 导入进度事件（点对点 Channel，保证有序）
@@ -87,6 +89,12 @@ pub async fn open_files(
             .encoding
             .as_deref()
             .and_then(logscope_core::scanner::encoding_from_str),
+        custom_pattern: settings
+            .custom_pattern
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(str::to_string),
         default_tz_offset_min: tz,
         max_event_bytes: settings.max_event_bytes.unwrap_or(8 * 1024 * 1024),
         ..Default::default()
@@ -320,4 +328,67 @@ pub fn file_summary(
         truncated_events: stats.truncated_events,
         duration_ms: stats.duration.as_secs_f64() * 1000.0,
     }
+}
+
+/// 解析预览行
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewRowDto {
+    pub line: String,
+    pub matched: bool,
+    pub timestamp_ms: Option<i64>,
+    pub level: Option<String>,
+    pub thread: Option<String>,
+    pub logger: Option<String>,
+}
+
+/// 解析预览结果
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewDto {
+    /// 未提供自定义规则时，自动识别到的内置规则名
+    pub detected: Option<String>,
+    pub matched: usize,
+    pub sampled: usize,
+    pub rows: Vec<PreviewRowDto>,
+}
+
+/// 解析预览（M4）：不导入、不建索引，只采样文件头部若干行并报告识别情况。
+/// `pattern` 为空时使用自动识别；否则校验并试用自定义正则。
+#[tauri::command]
+pub async fn preview_parse(
+    file: String,
+    pattern: Option<String>,
+    tz_offset_min: Option<i32>,
+    max_lines: Option<usize>,
+    state: State<'_, AppState>,
+) -> CmdResult<PreviewDto> {
+    let tz = tz_offset_min.unwrap_or(state.default_tz_offset_min);
+    let max_lines = max_lines.unwrap_or(40);
+    let path = std::path::PathBuf::from(file);
+    let pat = pattern
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
+    let preview = tauri::async_runtime::spawn_blocking(move || {
+        logscope_core::parser::preview::preview_file(&path, pat.as_deref(), tz, max_lines)
+    })
+    .await
+    .map_err(|e| CmdError::new("join", e.to_string()))??;
+    Ok(PreviewDto {
+        detected: preview.detected,
+        matched: preview.matched,
+        sampled: preview.sampled,
+        rows: preview
+            .rows
+            .into_iter()
+            .map(|r| PreviewRowDto {
+                line: r.line,
+                matched: r.matched,
+                timestamp_ms: r.timestamp_ms,
+                level: r.level,
+                thread: r.thread,
+                logger: r.logger,
+            })
+            .collect(),
+    })
 }

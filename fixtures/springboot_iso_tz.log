@@ -1,0 +1,6 @@
+2026-11-19T15:51:32.304+08:00 INFO  12345 --- [     main] c.z.f.a.RateLimiterAspect                : [doBefore,66] - 请求接口: /api/user
+2026-11-19T15:51:33.500+08:00 INFO   --- [http-nio-8080-e] c.z.f.a.LogAspect                        : 获取用户信息
+2026-11-19T15:51:34.100+08:00 ERROR 12345 --- [http-nio-8080-e] c.z.f.api.UserController                 : 处理失败
+	at com.zjc.api.controller.UserController.get(UserController.java:42)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:568)
+2026-11-19T16:03:02.000Z WARN  12345 --- [           main] c.z.f.a.Boot                             : zone Z form

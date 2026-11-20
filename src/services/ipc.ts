@@ -93,7 +93,12 @@ export async function listFiles(): Promise<FileSummary[]> {
 export function openFiles(
   paths: string[],
   onProgress: (p: ImportProgress) => void,
-  settings: { profile?: string; encoding?: string; tzOffsetMin?: number } = {},
+  settings: {
+    profile?: string;
+    encoding?: string;
+    tzOffsetMin?: number;
+    customPattern?: string;
+  } = {},
 ): Promise<string> {
   const ch = new Channel<ImportProgress>();
   ch.onmessage = onProgress;
@@ -103,9 +108,36 @@ export function openFiles(
       profile: settings.profile ?? null,
       encoding: settings.encoding ?? null,
       tzOffsetMin: settings.tzOffsetMin ?? null,
+      customPattern: settings.customPattern ?? null,
     },
     onProgress: ch,
   });
+}
+
+/** 解析预览结果（M4 自定义规则） */
+export interface PreviewRow {
+  line: string;
+  matched: boolean;
+  timestampMs: number | null;
+  level: string | null;
+  thread: string | null;
+  logger: string | null;
+}
+
+export interface PreviewResult {
+  detected: string | null;
+  matched: number;
+  sampled: number;
+  rows: PreviewRow[];
+}
+
+/** 预览解析效果：pattern 为空时使用自动识别 */
+export async function previewParse(
+  file: string,
+  pattern?: string,
+  maxLines = 40,
+): Promise<PreviewResult> {
+  return invoke<PreviewResult>("preview_parse", { file, pattern: pattern ?? null, maxLines });
 }
 
 export async function cancelImport(taskId: string): Promise<boolean> {
@@ -154,6 +186,8 @@ export interface TimelineDto {
   /** 每桶 [total, warn, error] */
   buckets: [number, number, number][];
   totalEvents: number;
+  /** 无时间戳事件数（不进桶，只在列表"未知时间"中可见） */
+  noTimeEvents: number;
 }
 
 export async function getTimeline(req: {

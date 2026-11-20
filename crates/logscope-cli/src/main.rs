@@ -41,6 +41,9 @@ enum Cmd {
         max_event_bytes: usize,
         #[arg(long)]
         json: bool,
+        /// 自定义解析正则（需含 ts / level 命名组）
+        #[arg(long)]
+        custom_pattern: Option<String>,
     },
     /// 按事件 ID 读取完整原文（含多行堆栈）
     Show {
@@ -105,6 +108,15 @@ enum Cmd {
         #[arg(long, default_value_t = 42)]
         seed: u64,
     },
+    /// 解析预览：查看自动识别/自定义规则对文件头部的命中情况
+    Preview {
+        file: PathBuf,
+        /// 自定义正则（需含 ts / level 命名组）
+        #[arg(long)]
+        pattern: Option<String>,
+        #[arg(long, default_value_t = 40)]
+        lines: usize,
+    },
     /// 基准测试：解析 / 级别过滤 / 文本过滤 / 时间轴 各阶段耗时（多次取中位数）
     Bench {
         file: PathBuf,
@@ -145,7 +157,15 @@ fn run(cmd: Cmd) -> Result<i32> {
             encoding,
             max_event_bytes,
             json,
-        } => cmd_parse(&file, &profile, &encoding, max_event_bytes, json),
+            custom_pattern,
+        } => cmd_parse(
+            &file,
+            &profile,
+            &encoding,
+            max_event_bytes,
+            json,
+            custom_pattern.as_deref(),
+        ),
         Cmd::Show { file, id, raw } => cmd_show(&file, id, raw),
         Cmd::Context {
             file,
@@ -172,6 +192,11 @@ fn run(cmd: Cmd) -> Result<i32> {
             stack_rate,
             seed,
         } => cmd_gen(&out, &size, err_rate, stack_rate, seed),
+        Cmd::Preview {
+            file,
+            pattern,
+            lines,
+        } => cmd_preview(&file, pattern.as_deref(), lines),
         Cmd::Bench { file, text, runs } => cmd_bench(&file, &text, runs),
     }
 }
@@ -181,6 +206,7 @@ fn scan_and_index(
     path: &std::path::Path,
     profile: &str,
     encoding: &str,
+    custom_pattern: Option<&str>,
 ) -> Result<(Arc<FileIndex>, DetailReader, WorkspaceIndex, ScanOptions)> {
     // "auto" → None（自动识别）；其余名字必须有效
     let profile_hint = profile_id_from_str(profile);
@@ -197,6 +223,7 @@ fn scan_and_index(
     let opts = ScanOptions {
         profile_hint,
         encoding_hint,
+        custom_pattern: custom_pattern.map(str::to_string),
         ..Default::default()
     };
     let cb = ScanCallbacks::default();
@@ -241,8 +268,9 @@ fn cmd_parse(
     encoding: &str,
     _max_event_bytes: usize,
     json: bool,
+    custom_pattern: Option<&str>,
 ) -> Result<i32> {
-    let (idx, _reader, _ws, opts) = scan_and_index(file, profile, encoding)?;
+    let (idx, _reader, _ws, opts) = scan_and_index(file, profile, encoding, custom_pattern)?;
     let stats = &idx.stats;
     let tz = opts.default_tz_offset_min;
 
@@ -308,7 +336,7 @@ fn cmd_parse(
 }
 
 fn cmd_show(file: &std::path::Path, id: u32, raw: bool) -> Result<i32> {
-    let (idx, mut reader, _ws, _) = scan_and_index(file, "auto", "auto")?;
+    let (idx, mut reader, _ws, _) = scan_and_index(file, "auto", "auto", None)?;
     let Some(entry) = idx.entries.get(id as usize) else {
         bail!(
             "事件 ID {} 不存在（共 {} 个事件，ID 范围 0..{}）",
@@ -336,7 +364,7 @@ fn cmd_context(
     after: u32,
     same_thread: bool,
 ) -> Result<i32> {
-    let (idx, mut reader, _ws, opts) = scan_and_index(file, "auto", "auto")?;
+    let (idx, mut reader, _ws, opts) = scan_and_index(file, "auto", "auto", None)?;
     let ctx = if same_thread {
         reader.read_context_thread(&idx, id, before, after)
     } else {
@@ -412,7 +440,7 @@ fn cmd_filter(
     regex: bool,
     limit: usize,
 ) -> Result<i32> {
-    let (idx, mut reader, ws, opts) = scan_and_index(file, "auto", "auto")?;
+    let (idx, mut reader, ws, opts) = scan_and_index(file, "auto", "auto", None)?;
     if idx.entries.is_empty() {
         return Ok(EXIT_EMPTY);
     }
@@ -481,7 +509,7 @@ fn cmd_filter(
 }
 
 fn cmd_timeline(file: &std::path::Path, bucket: &str, json: bool) -> Result<i32> {
-    let (idx, _reader, ws, _opts) = scan_and_index(file, "auto", "auto")?;
+    let (idx, _reader, ws, _opts) = scan_and_index(file, "auto", "auto", None)?;
     if idx.entries.is_empty() {
         return Ok(EXIT_EMPTY);
     }
@@ -856,4 +884,38 @@ fn cmd_bench(file: &std::path::Path, text: &str, runs: usize) -> Result<i32> {
 fn median(v: &mut [f64]) -> f64 {
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     v[v.len() / 2]
+}
+
+// ---------------- preview ----------------
+
+/// 解析预览：报告内置识别结果 / 自定义规则的逐行命中情况（不建索引）。
+fn cmd_preview(file: &std::path::Path, pattern: Option<&str>, lines: usize) -> Result<i32> {
+    let pv = logscope_core::parser::preview::preview_file(file, pattern, 480, lines)
+        .with_context(|| format!("预览失败: {}", file.display()))?;
+    match &pv.detected {
+        Some(name) => println!("自动识别: {}", name),
+        None => println!("使用自定义规则"),
+    }
+    println!("命中 {}/{} 行", pv.matched, pv.sampled);
+    for r in &pv.rows {
+        let mark = if r.matched { "✓" } else { "✗" };
+        let ts = r
+            .timestamp_ms
+            .map(|m| fmt_ts(m, 480))
+            .unwrap_or_else(|| "-".into());
+        println!(
+            "{} {} {:<6} {:<18} {:<28} {}",
+            mark,
+            ts,
+            r.level.as_deref().unwrap_or("-"),
+            r.thread.as_deref().unwrap_or("-"),
+            r.logger.as_deref().unwrap_or("-"),
+            r.line.chars().take(80).collect::<String>()
+        );
+    }
+    if pv.matched == 0 {
+        println!("\n没有一行被识别。请检查时间戳/级别格式，或用 --pattern 传入自定义正则。");
+        return Ok(EXIT_EMPTY);
+    }
+    Ok(0)
 }

@@ -326,27 +326,29 @@ fn cancel_mid_scan_returns_cancelled() {
 }
 
 #[test]
-fn huge_event_truncation_invariant() {
+fn huge_raw_file_splits_per_line() {
+    // 病态夹具：1 个日志头 + 12 万行堆栈续行。采样区候选头不足 → 回退 Raw，
+    // 而 Raw 按"每行一个事件"处理（无时间戳，全部进未知时间分组），
+    // 不会退化成单个巨型事件，也不会触发截断。
     let path = fixture("huge_event.log");
     if !path.exists() {
         eprintln!("skip: huge_event.log 未生成");
         return;
     }
-    let opts = ScanOptions {
-        max_event_bytes: 1024 * 1024, // 1MB 上限
-        ..Default::default()
-    };
     let cb = ScanCallbacks::default();
-    let out = scan_file(&path, &opts, &cb, 0).unwrap();
+    let out = scan_file(&path, &ScanOptions::default(), &cb, 0).unwrap();
     assert_full_coverage(&out);
-    assert!(out.stats.truncated_events >= 1);
+    assert_eq!(out.stats.truncated_events, 0);
     assert!(
-        out.stats.unknown_count() >= 1,
-        "截断后的续行应进 UNKNOWN，不丢弃"
+        out.stats.events > 100_000,
+        "应逐行拆分: {}",
+        out.stats.events
     );
-    for e in &out.entries {
-        assert!(e.byte_len() <= 1024 * 1024 + 4 * 1024 * 1024);
-    }
+    assert_eq!(
+        out.stats.no_timestamp_events, out.stats.events,
+        "逐行事件均无时间戳"
+    );
+    assert_eq!(out.stats.unknown_count(), out.stats.events as u64);
 }
 
 #[test]
@@ -437,4 +439,32 @@ fn long_line_virtual_break_invariant() {
     assert_full_coverage(&out2);
     assert!(out2.stats.events > 2, "截断后应产生更多事件段");
     assert!(out2.stats.truncated_events >= 1);
+}
+
+#[test]
+fn springboot_iso8601_tz_variant() {
+    // %d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level ${PID:- } --- [%15.15t] %-40.40logger{39} : %msg
+    let out = scan(&fixture("springboot_iso_tz.log"));
+    assert_eq!(
+        out.meta.profile,
+        Some(ProfileId::Builtin(BuiltinProfile::SpringBootDefault))
+    );
+    assert_full_coverage(&out);
+    // 4 个事件头 + 2 行堆栈（归并到 ERROR 事件）
+    assert_eq!(out.stats.events, 4);
+    assert_eq!(out.stats.unknown_count(), 0);
+    assert_eq!(out.stats.error_count(), 1);
+    // 堆栈归并
+    let err = out
+        .entries
+        .iter()
+        .find(|e| e.level == LogLevel::Error)
+        .unwrap();
+    assert!(err.byte_len() > 150);
+    // 时区：+08:00 的 15:51:32.304 与 Z 的 16:03:02.000 都解析成功
+    assert!(out.entries.iter().all(|e| e.timestamp_ms.is_some()));
+    let ts: Vec<i64> = out.entries.iter().filter_map(|e| e.timestamp_ms).collect();
+    // 第一行 +08:00 → 07:51:32.304Z；最后一行 Z → 16:03:02.000Z
+    assert_eq!(ts[0] % 86_400_000, 7 * 3_600_000 + 51 * 60_000 + 32_304);
+    assert_eq!(ts[3] % 86_400_000, 16 * 3_600_000 + 3 * 60_000 + 2_000);
 }

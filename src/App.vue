@@ -96,27 +96,54 @@ body,
   height: 100%;
 }
 .app {
+  /* 主题变量：暗色（默认） */
+  --bg: #1a1b26;
+  --bg-elevated: #1b1c28;
+  --bg-surface: #131420;
+  --bg-panel: rgba(0, 0, 0, 0.18);
+  --border: #2a2b3a;
+  --border-strong: #3a3b4a;
+  --overlay-bg: #1a1b26e6;
+  --splitter: #3a3b4a66;
+  --text: #d5d6db;
+  --text-dim: #6b7280;
+  --text-mute: #8a8f98;
+  --hover: #ffffff0d;
+  --hairline: #ffffff08;
+
   height: 100vh;
   display: flex;
   flex-direction: column;
-  background: #1a1b26;
-  color: #d5d6db;
+  background: var(--bg);
+  color: var(--text);
 }
 .app.light {
-  background: #f5f6f8;
-  color: #26272e;
+  --bg: #f5f6f8;
+  --bg-elevated: #ffffff;
+  --bg-surface: #ffffff;
+  --bg-panel: #ffffff;
+  --border: #e0e2e8;
+  --border-strong: #c9cdd4;
+  --overlay-bg: #ffffffe6;
+  --splitter: #c9cdd466;
+  --text: #26272e;
+  --text-dim: #7b8087;
+  --text-mute: #8a8f98;
+  --hover: rgba(0, 0, 0, 0.05);
+  --hairline: rgba(0, 0, 0, 0.06);
+
+  background: var(--bg);
+  color: var(--text);
 }
 .app-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 6px 14px;
-  border-bottom: 1px solid #2a2b3a;
+  border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
-.app.light .app-header {
-  border-bottom-color: #dcdfe6;
-}
+
 .brand {
   font-weight: 700;
   font-size: 14px;
@@ -139,7 +166,7 @@ body,
   min-width: 0;
 }
 .dim {
-  color: #6b7280;
+  color: var(--text-dim);
 }
 .tiny {
   font-size: 11px;

@@ -20,6 +20,50 @@ const MIN_REGION_LINES: usize = 2;
 ///
 /// 返回 `(profile_id, 命中率, 采样字节)`；采样字节供编码修正使用。
 /// 识别完成后 scanner 已回卷到数据起点，可直接进入索引循环。
+/// 用指定解析器采样头部区域，返回 `(命中率, 采样字节)`（自定义规则用）。
+/// 与自动识别的口径一致：明显续行（空白起始 / Caused by / ...）不计入分母。
+pub fn sample_ratio(
+    scanner: &mut LineScanner,
+    parser: &dyn EventParser,
+) -> Result<(f32, Vec<u8>), CoreError> {
+    scanner.rewind_to_start()?;
+    let mut sample = Vec::new();
+    let mut hits = 0usize;
+    let mut non_empty = 0usize;
+    let mut taken = 0usize;
+    while taken < SAMPLE_LINES {
+        let Some(line) = scanner.next_line()? else {
+            break;
+        };
+        if line.truncated {
+            continue;
+        }
+        let content = line.content();
+        if content.is_empty() {
+            continue;
+        }
+        taken += 1;
+        if sample.len() < SAMPLE_BYTES_CAP {
+            let remain = SAMPLE_BYTES_CAP - sample.len();
+            sample.extend_from_slice(&line.bytes[..line.bytes.len().min(remain)]);
+        }
+        if looks_like_continuation(content) {
+            continue;
+        }
+        non_empty += 1;
+        if parser.is_head(content) {
+            hits += 1;
+        }
+    }
+    scanner.rewind_to_start()?;
+    let ratio = if non_empty == 0 {
+        0.0
+    } else {
+        hits as f32 / non_empty as f32
+    };
+    Ok((ratio, sample))
+}
+
 pub fn detect_profile(
     scanner: &mut LineScanner,
     parsers: &'static [Box<dyn EventParser>],
@@ -111,6 +155,10 @@ fn sample_region(
         }
         non_empty += 1;
         for (i, p) in parsers.iter().enumerate() {
+            // Raw 兜底对任何非空行都"命中"，不参与评分（否则会吞掉所有识别结果）
+            if matches!(p.id(), ProfileId::Builtin(BuiltinProfile::Raw)) {
+                continue;
+            }
             if p.is_head(content) {
                 hits[i] += 1;
             }

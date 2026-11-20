@@ -37,6 +37,7 @@ impl TimeParser {
 }
 
 /// 手工定长拆位：`YYYY-MM-DD[ T]HH:MM:SS[.f{1,9}]` → 本地墙钟毫秒。
+/// 兼容日期分隔符 `-` / `/`，小数分隔符 `.` / `,`。
 fn parse_naive_ms(ts: &[u8]) -> (i64, bool) {
     // 最短合法长度：19（无小数）
     if ts.len() < 19 {
@@ -52,9 +53,9 @@ fn parse_naive_ms(ts: &[u8]) -> (i64, bool) {
         return (0, true);
     }
     // 分隔符形状校验（防 `captures` 与形状假设不符的防御性检查）
-    if ts[4] != b'-'
-        || ts[7] != b'-'
-        || ts[10] != b' ' && ts[10] != b'T'
+    if !matches!(ts[4], b'-' | b'/')
+        || !matches!(ts[7], b'-' | b'/')
+        || !matches!(ts[10], b' ' | b'T')
         || ts[13] != b':'
         || ts[16] != b':'
     {
@@ -64,7 +65,7 @@ fn parse_naive_ms(ts: &[u8]) -> (i64, bool) {
     // 可选小数：从 19 位后
     let mut millis = 0i64;
     if ts.len() > 19 {
-        if ts[19] != b'.' {
+        if !matches!(ts[19], b'.' | b',') {
             return (0, true);
         }
         let frac = &ts[20..];

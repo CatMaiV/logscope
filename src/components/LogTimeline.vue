@@ -21,6 +21,7 @@ const { files, timeRange, lastQuery } = storeToRefs(store);
 
 const wrapEl = ref<HTMLDivElement | null>(null);
 const loading = ref(false);
+const noTimeCount = ref(0);
 let chart: echarts.ECharts | null = null;
 let resizeObserver: ResizeObserver | null = null;
 
@@ -80,13 +81,18 @@ function pixelRectToTime(left: number, right: number): [number, number] | null {
 }
 
 async function refresh() {
-  if (!files.value.length) return;
+  if (!files.value.length) {
+    noTimeCount.value = 0;
+    chart?.clear();
+    return;
+  }
   loading.value = true;
   try {
     const dto = await getTimeline({
       fileIds: store.selectedFileIds.length ? store.selectedFileIds : undefined,
       timeRange: timeRange.value ?? undefined,
     });
+    noTimeCount.value = dto.noTimeEvents ?? 0;
     render(dto);
   } finally {
     loading.value = false;
@@ -229,6 +235,9 @@ onBeforeUnmount(() => {
       </NTooltip>
       <span v-if="!timeRange" class="dim tiny hint-text">按住左键拖拽选择时间段</span>
       <span class="spacer" />
+      <NTag v-if="noTimeCount > 0" size="tiny" type="warning">
+        {{ noTimeCount.toLocaleString() }} 条事件无时间戳（列表中可见）
+      </NTag>
       <NTag v-if="lastQuery?.text" size="tiny"> 分桶不受文本条件影响 </NTag>
       <span v-if="loading" class="dim tiny">加载中…</span>
     </div>
@@ -251,7 +260,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   height: 190px;
   min-height: 190px;
-  border-bottom: 1px solid var(--n-border-color, #2a2b3a);
+  border-bottom: 1px solid var(--n-border-color, var(--border));
 }
 .timeline-head {
   display: flex;
@@ -285,8 +294,8 @@ onBeforeUnmount(() => {
   transform: translateX(-50%);
   white-space: nowrap;
   font-size: 10px;
-  color: #d5d6db;
-  background: #1a1b26e6;
+  color: var(--text);
+  background: var(--overlay-bg);
   border: 1px solid #4f9cf9;
   border-radius: 3px;
   padding: 1px 5px;
@@ -296,8 +305,8 @@ onBeforeUnmount(() => {
   width: 15px;
   height: 15px;
   border-radius: 50%;
-  border: 1px solid #6b7280;
-  color: #6b7280;
+  border: 1px solid var(--text-dim);
+  color: var(--text-dim);
   font-size: 10px;
   align-items: center;
   justify-content: center;
@@ -310,7 +319,7 @@ onBeforeUnmount(() => {
   flex: 1;
 }
 .dim {
-  color: #6b7280;
+  color: var(--text-dim);
 }
 .tiny {
   font-size: 11px;

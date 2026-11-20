@@ -47,6 +47,8 @@ pub struct TimelineDto {
     /// 每桶 [total, warn, error]
     pub buckets: Vec<[u32; 3]>,
     pub total_events: u64,
+    /// 范围内无时间戳的事件数（不进桶，只在列表"未知时间"分组中可见）
+    pub no_time_events: u64,
 }
 
 /// 时间轴聚合（服务端聚合，≤1500 桶，不渲染每事件）。
@@ -69,6 +71,7 @@ pub fn get_timeline(req: TimelineRequest, state: State<'_, AppState>) -> CmdResu
             count: 0,
             buckets: Vec::new(),
             total_events: 0,
+            no_time_events: 0,
         });
     }
 
@@ -87,12 +90,23 @@ pub fn get_timeline(req: TimelineRequest, state: State<'_, AppState>) -> CmdResu
                 }
             }
             if lo > hi {
+                // 全部事件都没有时间戳：时间轴为空，但如实报告无时间事件数
+                let no_time = files
+                    .iter()
+                    .map(|f| {
+                        f.entries
+                            .iter()
+                            .filter(|e| e.timestamp_ms.is_none())
+                            .count()
+                    })
+                    .sum::<usize>() as u64;
                 return Ok(TimelineDto {
                     start_ms: 0,
                     bucket_ms: 1_000,
                     count: 0,
                     buckets: Vec::new(),
                     total_events: 0,
+                    no_time_events: no_time,
                 });
             }
             (lo, hi)
@@ -114,9 +128,13 @@ pub fn get_timeline(req: TimelineRequest, state: State<'_, AppState>) -> CmdResu
 
     let mut buckets = vec![[0u32; 3]; spec.count];
     let mut total = 0u64;
+    let mut no_time_events = 0u64;
     for f in &files {
         for e in &f.entries {
-            let Some(ts) = e.timestamp_ms else { continue };
+            let Some(ts) = e.timestamp_ms else {
+                no_time_events += 1;
+                continue;
+            };
             // 时间范围过滤（桶 spec 起点可能早于 lo）
             if ts < lo || ts > hi {
                 continue;
@@ -143,6 +161,7 @@ pub fn get_timeline(req: TimelineRequest, state: State<'_, AppState>) -> CmdResu
         count: spec.count,
         buckets,
         total_events: total,
+        no_time_events,
     })
 }
 
@@ -503,6 +522,7 @@ mod tests {
             count: 0,
             buckets: Vec::new(),
             total_events: 0,
+            no_time_events: 0,
         };
         let v2 = serde_json::to_value(&tl).unwrap();
         for key in ["startMs", "bucketMs", "totalEvents"] {

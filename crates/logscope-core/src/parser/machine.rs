@@ -112,6 +112,10 @@ impl<'p> ParserMachine<'p> {
                 if h.bad_timestamp {
                     f = f.union(EventFlags::bad_timestamp());
                 }
+                // 级别未能识别（如 Raw 逐行事件）→ 标记未识别
+                if h.level == crate::model::level::LogLevel::Unknown {
+                    f = f.union(EventFlags::unknown());
+                }
                 (h.level, h.timestamp_ms, f)
             }
             None => (

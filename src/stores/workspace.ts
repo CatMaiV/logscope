@@ -84,7 +84,7 @@ export const useWorkspace = defineStore("workspace", {
       this.selectedFileIds = this.selectedFileIds.filter((id) => alive.has(id));
     },
 
-    async importPaths(paths: string[]) {
+    async importPaths(paths: string[], settings?: { customPattern?: string }) {
       if (!paths.length || this.importing) return;
       this.importing = true;
       this.importErrors = [];
@@ -98,15 +98,19 @@ export const useWorkspace = defineStore("workspace", {
             }
           }, 100);
         });
-        void openFiles(paths, (p) => {
-          this.importProgress = p;
-          if (p.phase === "failed" && p.message) {
-            this.importErrors.push(`${p.file}: ${p.message}`);
-          }
-          if (p.phase === "all-done" || p.phase === "cancelled") {
-            finished = true;
-          }
-        }).catch((e) => {
+        void openFiles(
+          paths,
+          (p) => {
+            this.importProgress = p;
+            if (p.phase === "failed" && p.message) {
+              this.importErrors.push(`${p.file}: ${p.message}`);
+            }
+            if (p.phase === "all-done" || p.phase === "cancelled") {
+              finished = true;
+            }
+          },
+          { customPattern: settings?.customPattern },
+        ).catch((e) => {
           this.importErrors.push(String(e));
           finished = true;
         });
@@ -129,6 +133,8 @@ export const useWorkspace = defineStore("workspace", {
     async runSearch(params?: SearchParams) {
       const q = params ?? this.effectiveQuery;
       this.lastQuery = q;
+
+      // 释放上一个检索结果
       if (
         this.searchId &&
         (this.searchState === "running" || this.searchState === "done")
@@ -136,6 +142,18 @@ export const useWorkspace = defineStore("workspace", {
         if (this.searchState === "running") await cancelSearch(this.searchId);
         await closeSearch(this.searchId).catch(() => undefined);
       }
+      this.searchId = null;
+
+      // 工作区为空：回到空闲态，不发检索请求；同时清除时间条件
+      if (this.files.length === 0) {
+        this.searchState = "idle";
+        this.searchTotal = 0;
+        this.searchProgress = null;
+        this.timeRange = null;
+        this.timelineScope = "full";
+        return;
+      }
+
       this.searchState = "running";
       this.searchTotal = 0;
       this.searchProgress = null;
@@ -185,9 +203,38 @@ export const useWorkspace = defineStore("workspace", {
     },
 
     async closeFile(fileId: number) {
-      await closeFiles([fileId]);
+      // 详情面板正指向该文件时先关闭，避免后续读取悬空引用
+      if (this.detailRef?.fileId === fileId) this.closeDetail();
+      try {
+        await closeFiles([fileId]);
+      } catch (e) {
+        this.importErrors.push(`移除文件失败: ${e}`);
+        return;
+      }
       await this.refreshFiles();
       await this.runSearch();
+    },
+
+    /** 关闭全部文件（释放全部索引与句柄） */
+    async closeAllFiles() {
+      const ids = this.files.map((f) => f.fileId);
+      if (!ids.length) return;
+      this.closeDetail();
+      try {
+        await closeFiles(ids);
+      } catch (e) {
+        this.importErrors.push(`移除全部文件失败: ${e}`);
+        return;
+      }
+      await this.refreshFiles();
+      await this.runSearch();
+    },
+
+    /** 关闭单个文件并按自定义规则重新导入（M4） */
+    async reimportWithPattern(file: FileSummary, customPattern: string) {
+      await closeFiles([file.fileId]);
+      await this.refreshFiles();
+      await this.importPaths([file.path], { customPattern });
     },
 
     toggleFileSelected(fileId: number) {

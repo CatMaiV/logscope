@@ -20,6 +20,9 @@ pub enum CoreError {
 
     #[error("文件为空或不包含任何日志事件")]
     EmptyFile,
+
+    #[error("自定义解析正则无效: {0}")]
+    InvalidPattern(String),
 }
 
 /// 解析过程中的非致命问题（不中断扫描）。

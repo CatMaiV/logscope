@@ -29,6 +29,7 @@ impl From<logscope_core::CoreError> for CmdError {
             logscope_core::CoreError::UnsupportedEncoding(_) => "unsupported-encoding",
             logscope_core::CoreError::InvalidRef { .. } => "invalid-ref",
             logscope_core::CoreError::EmptyFile => "empty-file",
+            logscope_core::CoreError::InvalidPattern(_) => "invalid-pattern",
             logscope_core::CoreError::Io(_) => "io",
         };
         CmdError::new(code, e.to_string())

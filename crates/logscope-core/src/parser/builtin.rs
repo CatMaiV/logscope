@@ -7,13 +7,13 @@ use std::sync::OnceLock;
 
 /// (1) Spring Boot 默认：`%d %5p ${PID} --- [%t] %logger{39} : %m`
 /// 形如 `2026-11-20 09:15:42.123  INFO 12345 --- [main] com.example.Foo : msg`
-const RE_SPRINGBOOT: &str = r"(?-u)^(?P<ts>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?)(?P<tz>Z|[+-]\d{2}:?\d{2})?\s+(?P<level>TRACE|DEBUG|INFO|WARN|ERROR|FATAL)\s+(?:\S+\s+)?---\s+\[(?P<thread>[^\]]*)\]\s+(?P<logger>\S+)\s*:\s?(?P<msg>.*)$";
+const RE_SPRINGBOOT: &str = r"(?-u)^(?P<ts>\d{4}[-/]\d{2}[-/]\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,9})?)(?P<tz>Z|[+-]\d{2}:?\d{2})?\s+(?P<level>TRACE|DEBUG|INFO|WARN|ERROR|FATAL)\s+(?:\S+\s+)?---\s+\[(?P<thread>[^\]]*)\]\s+(?P<logger>\S+)\s*:\s?(?P<msg>.*)$";
 
 /// (2) Logback 标准：`%d{...} [%thread] %-5level %logger{36} - %msg`
-const RE_LOGBACK_STD: &str = r"(?-u)^(?P<ts>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?)(?P<tz>Z|[+-]\d{2}:?\d{2})?\s+\[(?P<thread>[^\]]*)\]\s+(?P<level>TRACE|DEBUG|INFO|WARN|ERROR|FATAL)\s+(?P<logger>\S+)\s+-\s?(?P<msg>.*)$";
+const RE_LOGBACK_STD: &str = r"(?-u)^(?P<ts>\d{4}[-/]\d{2}[-/]\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,9})?)(?P<tz>Z|[+-]\d{2}:?\d{2})?\s+\[(?P<thread>[^\]]*)\]\s+(?P<level>TRACE|DEBUG|INFO|WARN|ERROR|FATAL)\s+(?P<logger>\S+)\s+-\s?(?P<msg>.*)$";
 
 /// (3) Logback 无线程段变体：`%d{...} %-5level %logger - %msg`
-const RE_LOGBACK_NOTHREAD: &str = r"(?-u)^(?P<ts>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?)(?P<tz>Z|[+-]\d{2}:?\d{2})?\s+(?P<level>TRACE|DEBUG|INFO|WARN|ERROR|FATAL)\s+(?P<logger>\S+)\s+-\s?(?P<msg>.*)$";
+const RE_LOGBACK_NOTHREAD: &str = r"(?-u)^(?P<ts>\d{4}[-/]\d{2}[-/]\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,9})?)(?P<tz>Z|[+-]\d{2}:?\d{2})?\s+(?P<level>TRACE|DEBUG|INFO|WARN|ERROR|FATAL)\s+(?P<logger>\S+)\s+-\s?(?P<msg>.*)$";
 
 /// 基于正则的事件头解析器。三个内置 Pattern 共享同一组命名捕获组。
 pub struct RegexHeadParser {
@@ -30,6 +30,33 @@ impl RegexHeadParser {
             re: regex::bytes::Regex::new(pattern).expect("内置正则必须编译成功"),
         }
     }
+}
+
+/// 构建用户自定义解析器（M4）。
+///
+/// 校验要求：
+/// - 正则可编译；建议以 `(?-u)` 开头（字节语义，兼容 GBK）
+/// - 必须包含命名组 `ts`（时间戳文本）与 `level`（级别）
+/// - 可选命名组：`tz`（时区）、`thread`、`logger`、`msg`
+pub fn build_custom_parser(
+    pattern: &str,
+) -> Result<RegexHeadParser, crate::model::error::CoreError> {
+    let re = regex::bytes::Regex::new(pattern)
+        .map_err(|e| crate::model::error::CoreError::InvalidPattern(e.to_string()))?;
+    let names: Vec<&str> = re.capture_names().flatten().collect();
+    for required in ["ts", "level"] {
+        if !names.contains(&required) {
+            return Err(crate::model::error::CoreError::InvalidPattern(format!(
+                "缺少必需命名组 (?P<{}>...)（可用组：ts, tz?, thread?, logger?, msg?；当前组：{:?}）",
+                required, names
+            )));
+        }
+    }
+    Ok(RegexHeadParser {
+        id: ProfileId::Custom(0),
+        name: "custom",
+        re,
+    })
 }
 
 impl EventParser for RegexHeadParser {
@@ -193,10 +220,36 @@ mod tests {
 
     #[test]
     fn logback_std_iso8601_tz() {
+        // 逗号毫秒（常见于 %d{yyyy-MM-dd HH:mm:ss,SSS} 配置）+ 显式时区
         let line = b"2026-11-20T09:15:42,123+08:00 [worker-1] WARN  c.e.Foo - disk nearly full";
-        // 注意：逗号小数分隔（欧洲习惯）不在支持集合内——此行 ts 组停在秒
-        // 逗号不会被 tz 组吃掉（tz 以 Z/+/- 开头），后续 \s+ 失败 → 不是 head
-        assert!(!std_().is_head(line));
+        assert!(std_().is_head(line));
+        let head = std_().parse_head(
+            line,
+            &TimeParser {
+                default_tz_offset_min: 480,
+            },
+        );
+        assert_eq!(head.level, LogLevel::Warn);
+        assert_eq!(head.tz_offset_min, Some(480));
+        let dt = chrono::DateTime::from_timestamp_millis(head.timestamp_ms.unwrap()).unwrap();
+        // 09:15:42.123 +08:00 = 01:15:42.123 UTC
+        assert_eq!(dt.to_string(), "2026-11-20 01:15:42.123 UTC");
+    }
+
+    #[test]
+    fn slash_date_separator() {
+        // 日期用 / 分隔（部分自定义 Pattern）
+        let line = b"2026/11/20 09:15:42.123 [main] INFO  c.e.Foo - slash date";
+        assert!(std_().is_head(line));
+        let head = std_().parse_head(
+            line,
+            &TimeParser {
+                default_tz_offset_min: 480,
+            },
+        );
+        assert_eq!(head.level, LogLevel::Info);
+        let dt = chrono::DateTime::from_timestamp_millis(head.timestamp_ms.unwrap()).unwrap();
+        assert_eq!(dt.to_string(), "2026-11-20 01:15:42.123 UTC");
     }
 
     #[test]
@@ -250,10 +303,13 @@ mod tests {
     }
 
     #[test]
-    fn raw_never_matches() {
+    fn raw_is_line_per_event() {
+        // Raw 兜底：每行非空文本视为独立事件（无时间/级别 → 未知时间分组），
+        // 避免无格式文件变成单个巨型事件。
         let raw = find_parser(&ProfileId::Builtin(BuiltinProfile::Raw));
-        assert!(!raw.is_head(b"2026-11-20 09:15:42 [main] INFO c.e.Foo - x"));
-        assert!(!raw.is_head(b"anything"));
+        assert!(raw.is_head(b"==>  Preparing: INSERT INTO t VALUES (?, ?)"));
+        assert!(raw.is_head(b"anything"));
+        assert!(!raw.is_head(b""), "空行并入前一事件");
     }
 
     #[test]

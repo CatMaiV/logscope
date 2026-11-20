@@ -199,7 +199,7 @@ onUnmounted(() => window.removeEventListener("keydown", onKey));
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  border-bottom: 1px solid var(--n-border-color, #2a2b3a);
+  border-bottom: 1px solid var(--n-border-color, var(--border));
   flex-wrap: wrap;
 }
 .search-input {
@@ -207,7 +207,7 @@ onUnmounted(() => window.removeEventListener("keydown", onKey));
   max-width: 40vw;
 }
 .dim {
-  color: #6b7280;
+  color: var(--text-dim);
 }
 .tiny {
   font-size: 11px;

@@ -127,18 +127,60 @@ pub fn get_log_context(
     })
 }
 
-/// 关闭文件：释放索引与句柄。
-#[tauri::command]
-pub fn close_files(file_ids: Vec<u32>, state: State<'_, AppState>) -> CmdResult<usize> {
-    let mut ws = state.workspace.write();
+/// 关闭文件：释放索引与句柄（核心逻辑，便于单测）。
+pub fn remove_files(ws: &mut crate::state::Workspace, file_ids: &[u32]) -> usize {
     let mut remaining: Vec<std::sync::Arc<logscope_core::index::FileIndex>> =
         ws.index.files.values().cloned().collect();
     let before = remaining.len();
     remaining.retain(|f| !file_ids.contains(&f.meta.file_id));
-    for id in &file_ids {
+    for id in file_ids {
         ws.readers.remove(id); // drop DetailReader → 关闭句柄
     }
     let removed = before - remaining.len();
     ws.index = logscope_core::index::build_workspace(remaining);
-    Ok(removed)
+    removed
+}
+
+/// 关闭文件：释放索引与句柄。
+#[tauri::command]
+pub fn close_files(file_ids: Vec<u32>, state: State<'_, AppState>) -> CmdResult<usize> {
+    let mut ws = state.workspace.write();
+    Ok(remove_files(&mut ws, &file_ids))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn make_index(file_id: u32) -> Arc<logscope_core::index::FileIndex> {
+        let meta = logscope_core::model::file_meta::FileMeta {
+            file_id,
+            path: std::path::PathBuf::from(format!("f{}.log", file_id)),
+            file_size: 0,
+            modified_at: None,
+            encoding: logscope_core::model::file_meta::SourceEncoding::Utf8,
+            profile: None,
+        };
+        Arc::new(logscope_core::index::FileIndex::new(
+            meta,
+            Vec::new(),
+            logscope_core::model::stats::ParseStats::default(),
+        ))
+    }
+
+    #[test]
+    fn remove_one_and_all_files() {
+        let mut ws = crate::state::Workspace {
+            index: logscope_core::index::build_workspace(vec![make_index(0), make_index(1)]),
+            ..Default::default()
+        };
+        assert_eq!(remove_files(&mut ws, &[0]), 1);
+        assert_eq!(ws.index.files.len(), 1);
+        assert!(ws.index.files.contains_key(&1));
+        assert_eq!(remove_files(&mut ws, &[1]), 1);
+        assert!(ws.index.files.is_empty());
+        assert_eq!(ws.index.time_order.len(), 0);
+        assert_eq!(remove_files(&mut ws, &[99]), 0, "不存在的 id 返回 0");
+    }
 }

@@ -78,8 +78,10 @@ impl EventParser for RawParser {
         "raw"
     }
 
-    fn is_head(&self, _line: &[u8]) -> bool {
-        false
+    fn is_head(&self, line: &[u8]) -> bool {
+        // 无格式文件：每行（非空）视为一个独立事件，避免整文件成为单个巨型事件。
+        // 事件无级别、无时间，进入"未知时间"分组（仍可搜索、可查看原文）。
+        !line.is_empty()
     }
 
     fn parse_head(&self, _line: &[u8], _time: &TimeParser) -> ParsedHead {

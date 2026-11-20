@@ -12,7 +12,7 @@ pub use reader::{LineScanner, RawLine};
 use crate::model::error::CoreError;
 use crate::model::event::LogEntry;
 use crate::model::file_meta::{FileMeta, SourceEncoding};
-use crate::model::profile::{BuiltinProfile, ProfileId};
+use crate::model::profile::{BuiltinProfile, EventParser, ProfileId};
 use crate::model::stats::{ParseStats, ScanCallbacks, ScanOptions, ScanPhase, ScanProgress};
 use crate::parser::builtin;
 use crate::parser::detect;
@@ -62,14 +62,27 @@ pub fn scan_file(
     let file_len = scanner.file_len();
     let mut encoding = opts.encoding_hint.unwrap_or(bom_encoding);
 
-    // 2. 采样识别 Profile（内部会回卷到起点）；顺带用采样修正编码
+    // 2. 采样识别 Profile（内部会回卷到起点）；顺带用采样修正编码。
+    //    自定义规则优先：直接构建解析器并单次采样，跳过自动识别。
     report(ScanPhase::Detect, 0, file_len, 0);
-    let (profile_id, head_match_ratio, sample) =
-        detect::detect_profile(&mut scanner, builtin::builtin_parsers())?;
+    let custom = match &opts.custom_pattern {
+        Some(p) => Some(builtin::build_custom_parser(p)?),
+        None => None,
+    };
+    let (profile_id, head_match_ratio, sample) = match &custom {
+        Some(parser) => {
+            let (ratio, sample) = detect::sample_ratio(&mut scanner, parser)?;
+            (parser.id(), ratio, sample)
+        }
+        None => detect::detect_profile(&mut scanner, builtin::builtin_parsers())?,
+    };
     if opts.encoding_hint.is_none() {
         encoding = refine_encoding(&sample, encoding);
     }
-    let parser_impl = builtin::find_parser(&profile_id);
+    let parser_impl: &dyn crate::model::profile::EventParser = match &custom {
+        Some(p) => p,
+        None => builtin::find_parser(&profile_id),
+    };
 
     // 3. 逐行索引
     report(ScanPhase::Indexing, 0, file_len, 0);
