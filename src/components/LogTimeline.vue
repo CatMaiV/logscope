@@ -7,6 +7,11 @@
  *   （可反复拖拽，每次把范围收窄/改选；顶部标签随时可删除）
  * - 删除顶部时间条件（或双击 / 点「重置」）→ 时间轴恢复全量显示
  * 选中的范围同时作用于列表与图表；图形按当前范围重新聚合（更细的桶）。
+ *
+ * 坐标约定：x 轴是 time 轴，像素与时间线性对应，刻度标签落在它所标示的时间点上。
+ * 桶 i 覆盖 [startMs + i·bucketMs, startMs + (i+1)·bucketMs)，柱子画在桶的中点。
+ * 框选取光标处的精确时间，两端各自向外取整到桶边界（闭区间）：
+ * 起点 ≤ 按下处的时间 < 起点 + 桶宽，终点同理；落在范围之外的端点夹到首/末桶。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
@@ -24,6 +29,8 @@ const loading = ref(false);
 const noTimeCount = ref(0);
 let chart: echarts.ECharts | null = null;
 let resizeObserver: ResizeObserver | null = null;
+/** 最近一次绘制的桶数据：像素↔时间换算与提示框都按它计算 */
+let view: TimelineDto | null = null;
 
 /** 拖拽选区（像素，相对容器） */
 const dragging = ref(false);
@@ -45,44 +52,52 @@ const dragPreview = computed(() => {
   return r ? `${fmtMs(r[0])} ~ ${fmtMs(r[1])}` : "";
 });
 
-function msToAxis(ms: number): string {
-  const d = new Date(ms + store.tzOffsetMin * 60_000);
-  return d.toISOString().slice(0, 19).replace("T", " ");
+const MINUTE = 60_000;
+const DAY = 24 * 60 * MINUTE;
+const p2 = (n: number) => String(n).padStart(2, "0");
+
+/** 刻度标签文本（工作区时区的墙钟时间）：零点标日期，整分标时分，其余带秒 */
+function axisLabelText(ms: number): string {
+  const local = ms + store.tzOffsetMin * MINUTE;
+  const d = new Date(local);
+  const within = (unit: number) => ((local % unit) + unit) % unit;
+  const hm = `${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}`;
+  if (within(DAY) === 0) return `${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}`;
+  if (within(MINUTE) === 0) return hm;
+  return `${hm}:${p2(d.getUTCSeconds())}`;
 }
 
-function axisToMs(label: string): number {
-  return Date.parse(label.replace(" ", "T") + "Z") - store.tzOffsetMin * 60_000;
-}
-
-/** 当前图表 x 轴刻度（时间标签）与桶宽 */
-function axisInfo(): { labels: string[]; span: number } | null {
-  const opt = chart?.getOption();
-  const x = (opt?.xAxis as { data?: string[] }[] | undefined)?.[0]?.data;
-  if (!x || x.length < 2) return null;
-  return { labels: x, span: axisToMs(x[1]) - axisToMs(x[0]) };
-}
-
-/** 像素区间 → 时间区间（夹紧到图表范围；无效返回 null） */
-function pixelRectToTime(left: number, right: number): [number, number] | null {
-  const info = axisInfo();
-  if (!chart || !info) return null;
-  const idxOf = (px: number): number => {
-    const v = chart!.convertFromPixel({ xAxisIndex: 0 }, px) as unknown;
-    const n = typeof v === "number" ? v : Array.isArray(v) ? Number(v[0]) : NaN;
-    return Number.isFinite(n) ? n : 0;
+/** 提示框里的桶时间范围；起止同一天时止点只写时分秒。不足 2 秒的桶带毫秒，否则起止会显示成同一秒 */
+function bucketRangeLabel(t0: number, t1: number, bucketMs: number): string {
+  const stamp = (ms: number) => {
+    const s = fmtMs(ms, store.tzOffsetMin);
+    return bucketMs < 2000 ? s : s.slice(0, 19);
   };
-  let i0 = Math.floor(Math.min(idxOf(left), idxOf(right)));
-  let i1 = Math.ceil(Math.max(idxOf(left), idxOf(right)));
-  i0 = Math.max(0, Math.min(info.labels.length - 1, i0));
-  i1 = Math.max(0, Math.min(info.labels.length - 1, i1));
-  const t0 = axisToMs(info.labels[i0]);
-  const t1 = axisToMs(info.labels[i1]) + info.span - 1;
-  return [t0, t1];
+  const a = stamp(t0);
+  const b = stamp(t1);
+  return a.slice(0, 10) === b.slice(0, 10) ? `${a} ~ ${b.slice(11)}` : `${a} ~ ${b}`;
+}
+
+const clampIdx = (i: number, n: number) => Math.max(0, Math.min(n - 1, i));
+
+/** 像素区间 → 时间区间：两端各自向外取整到桶边界（闭区间，ms）；整段落在时间范围之外返回 null */
+function pixelRectToTime(left: number, right: number): [number, number] | null {
+  if (!chart || !view) return null;
+  const { startMs, bucketMs, buckets } = view;
+  const timeAt = (px: number) => chart!.convertFromPixel({ xAxisIndex: 0 }, px) as number;
+  const from = Math.min(timeAt(left), timeAt(right));
+  const to = Math.max(timeAt(left), timeAt(right));
+  const last = startMs + buckets.length * bucketMs;
+  if (!(to >= startMs && from <= last)) return null; // NaN 也落在这里
+  const i0 = clampIdx(Math.floor((from - startMs) / bucketMs), buckets.length);
+  const i1 = clampIdx(Math.ceil((to - startMs) / bucketMs) - 1, buckets.length);
+  return [startMs + i0 * bucketMs, startMs + (i1 + 1) * bucketMs - 1];
 }
 
 async function refresh() {
   if (!files.value.length) {
     noTimeCount.value = 0;
+    view = null;
     chart?.clear();
     return;
   }
@@ -101,39 +116,42 @@ async function refresh() {
 
 function render(dto: TimelineDto) {
   if (!chart) return;
-  const x: string[] = [];
-  const normal: number[] = [];
-  const warn: number[] = [];
-  const error: number[] = [];
-  for (let i = 0; i < dto.buckets.length; i++) {
-    const [t, w, e] = dto.buckets[i];
-    x.push(msToAxis(dto.startMs + i * dto.bucketMs));
-    normal.push(Math.max(0, t - w - e));
-    warn.push(w);
-    error.push(e);
+  const n = dto.buckets.length;
+  if (!n) {
+    view = null;
+    chart.clear();
+    return;
   }
-  const trim = (a: number[]) => a.map((v) => (v === 0 ? null : v));
+  view = dto;
+  const { startMs, bucketMs } = dto;
+  // 每个桶都留一个数据点（高度 0 的为 null）：柱宽与提示框阴影才按桶宽计算
+  const points = (height: (b: [number, number, number]) => number) =>
+    dto.buckets.map(
+      (b, i) => [startMs + (i + 0.5) * bucketMs, height(b) || null] as [number, number | null],
+    );
 
   chart.setOption(
     {
       animation: false,
-      grid: { left: 46, right: 12, top: 10, bottom: 20 },
+      // 右侧留白要放得下半个 "HH:mm:ss" 标签：末刻度可能正好落在范围终点上
+      grid: { left: 46, right: 28, top: 10, bottom: 20 },
       tooltip: {
         trigger: "axis",
         axisPointer: { type: "shadow" },
         formatter: (params: unknown) => {
-          const arr = params as { name: string; value: number | null; seriesName: string }[];
-          if (!arr.length) return "";
-          const total = arr.reduce((s, p) => s + (p.value ?? 0), 0);
-          const err = arr.find((p) => p.seriesName === "ERROR")?.value ?? 0;
-          const wrn = arr.find((p) => p.seriesName === "WARN")?.value ?? 0;
-          return `<b>${arr[0].name}</b><br/>共 ${total} 条 · WARN ${wrn} · ERROR ${err}<br/><span style="opacity:.65">按住左键拖拽可选择时间段</span>`;
+          const k = (params as { dataIndex: number }[])[0]?.dataIndex;
+          const bucket = view?.buckets[k];
+          if (!view || !bucket) return "";
+          const t0 = view.startMs + k * view.bucketMs;
+          const t1 = t0 + view.bucketMs - 1;
+          return `<b>${bucketRangeLabel(t0, t1, view.bucketMs)}</b><br/>共 ${bucket[0]} 条 · WARN ${bucket[1]} · ERROR ${bucket[2]}<br/><span style="opacity:.65">按住左键拖拽可选择时间段</span>`;
         },
       },
       xAxis: {
-        type: "category",
-        data: x,
-        axisLabel: { fontSize: 10, color: "#8a8f98" },
+        type: "time",
+        min: startMs,
+        max: startMs + n * bucketMs,
+        axisLabel: { hideOverlap: true, fontSize: 10, color: "#8a8f98", formatter: axisLabelText },
         axisLine: { lineStyle: { color: "#3a3b4a" } },
         axisTick: { show: false },
       },
@@ -144,10 +162,13 @@ function render(dto: TimelineDto) {
         axisLabel: { fontSize: 10, color: "#8a8f98" },
         splitLine: { lineStyle: { color: "#ffffff10" } },
       },
+      // 不用 stack：堆叠在下层为空时从 0 起算，而 0 在 log 轴上映射成 NaN，整根柱子都不画
+      // ——纯 WARN / 纯 ERROR 的桶因此从图上消失。改为三层都从轴底画起、后画的盖住先画的（barGap -100%），视觉相同。
+      // 所以「正常」画总高，「WARN」画到 WARN+ERROR，「ERROR」画到 ERROR；提示框不读这里的值。
       series: [
-        { name: "正常", type: "bar", stack: "all", data: trim(normal), itemStyle: { color: "#4f9cf9" }, barMaxWidth: 8 },
-        { name: "WARN", type: "bar", stack: "all", data: trim(warn), itemStyle: { color: "#e0a84e" }, barMaxWidth: 8 },
-        { name: "ERROR", type: "bar", stack: "all", data: trim(error), itemStyle: { color: "#e05c5c" }, barMaxWidth: 8 },
+        { name: "正常", type: "bar", barGap: "-100%", data: points((b) => b[0]), itemStyle: { color: "#4f9cf9" }, barMaxWidth: 8 },
+        { name: "WARN", type: "bar", barGap: "-100%", data: points((b) => b[1] + b[2]), itemStyle: { color: "#e0a84e" }, barMaxWidth: 8 },
+        { name: "ERROR", type: "bar", barGap: "-100%", data: points((b) => b[2]), itemStyle: { color: "#e05c5c" }, barMaxWidth: 8 },
       ],
     },
     { notMerge: true },
